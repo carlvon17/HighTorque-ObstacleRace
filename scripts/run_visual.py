@@ -85,6 +85,9 @@ def run(windows):
     ap.add_argument('--navigation-profile', choices=['rt1','shared'], help='Default: rt1. Use shared for historical regression runs.')
     ap.add_argument('--camera-profile',choices=['d435i','legacy'],default='d435i',
                     help='D435i with the navigation profile settings, or historical 80-degree camera')
+    ap.add_argument('--gait-assist',action='store_true',
+                    help='Boost commands to the measured gait-initiation floor of the frozen '
+                         'AMP policy (shared profile only); the factory path is unchanged')
     args=ap.parse_args()
     args.navigation_profile = args.navigation_profile or ('shared' if args.camera_profile=='legacy' else 'rt1')
     rt1 = args.navigation_profile=='rt1'
@@ -116,7 +119,8 @@ def run(windows):
     else:
         nav_sources=[Path('navigation')/name for name in core_hashes()]
         hashes=core_hashes()
-        odom=NavigationRuntime(rig.width,rig.height,rig.intrinsics,rig.camera_position,rig.camera_rotation,args.speed)
+        odom=NavigationRuntime(rig.width,rig.height,rig.intrinsics,rig.camera_position,rig.camera_rotation,
+                               args.speed,gait_assist=args.gait_assist)
     referee=Referee(robot,track)
     rows=[];states=[];observations=[];replay=[];replay_rgb=[];replay_depth=[]
     next_camera,next_log=0.,10.;finish_time=None;status='duration_limit';blocked_since=None

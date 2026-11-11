@@ -30,7 +30,8 @@ def core_hashes():
 
 
 class NavigationRuntime:
-    def __init__(self, width, height, intrinsics, camera_position, camera_rotation, speed=.22, observation_lease=.35):
+    def __init__(self, width, height, intrinsics, camera_position, camera_rotation, speed=.22,
+                 observation_lease=.35, gait_assist=False):
         verify_dependencies()
         if not np.isfinite(speed) or not 0 < speed <= .4:
             raise ValueError('Navigation target speed must be within (0, 0.4]')
@@ -46,7 +47,7 @@ class NavigationRuntime:
         self.odometry = RGBDOdometry(width, height, 80., self.position, self.camera_rotation, intrinsics)
         self.floor_map = FloorMap(self.odometry.floor)
         self.navigator = VisualNavigator(speed, self.observation_lease)
-        self.adapter = AMPCommandAdapter()
+        self.adapter = AMPCommandAdapter(gait_assist=gait_assist)
         self.initial_yaw = None
         self.yaw = 0.
         self.turn = 0.
@@ -258,7 +259,11 @@ class NavigationRuntime:
         else:
             self.reason = 'ready'
         recovery=self.motion_recovery.update(timestamp,self.desired,self.pose,
-            self.navigator.measured_velocity,self.reason=='ready' and self.navigator.avoid.phase in ('idle','cruise'))
+            self.navigator.measured_velocity,
+            self.reason=='ready' and self.navigator.avoid.phase in ('idle','cruise')
+            # A gait-assist kick intentionally spends over a second near zero
+            # measured speed while the policy transitions into walking.
+            and not (self.adapter.gait_assist and self.adapter.kick_ticks>0))
         if self.reason=='ready' and self.navigator.avoid.phase in ('idle','cruise'):
             if recovery=='settle':self.reason='standing_recovery'
             elif recovery=='failed':
