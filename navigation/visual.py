@@ -37,10 +37,12 @@ class RGBDOdometry:
         f=height/2/np.tan(np.deg2rad(fovy/2))
         self.fx,self.fy,self.cx,self.cy=intrinsics if intrinsics is not None else (f,f,(width-1)/2,(height-1)/2)
         self.translation,self.rotation=camera_position,camera_rotation
+        self.position32=np.asarray(camera_position,dtype=np.float32)
+        self.rotation32=np.asarray(camera_rotation,dtype=np.float32)
         self.previous=None;self.previous_time=None;self.inliers=0;self.accepted=False;self.map_reset=False
         u,v=np.meshgrid(np.arange(width),np.arange(height))
         self.forward_ray=(u-self.cx)/self.fx*self.rotation[0,0]+(v-self.cy)/self.fy*self.rotation[0,1]+self.rotation[0,2]
-        rays=np.stack([(u-self.cx)/self.fx,(v-self.cy)/self.fy,np.ones_like(u)],-1)
+        rays=np.stack([(u-self.cx)/self.fx,(v-self.cy)/self.fy,np.ones_like(u)],-1).astype(np.float32)
         self.geometry=SurfaceOdometry(rays,camera_position,camera_rotation)
         self.floor=FloorOdometry((self.fx,self.fy,self.cx,self.cy),camera_position,camera_rotation)
         self.previous_ground=None
@@ -55,8 +57,8 @@ class RGBDOdometry:
         pixels=np.rint(uv).astype(int)
         pixels[:,0]=np.clip(pixels[:,0],0,depth.shape[1]-1);pixels[:,1]=np.clip(pixels[:,1],0,depth.shape[0]-1)
         z=depth[pixels[:,1],pixels[:,0]]
-        pc=np.column_stack([(uv[:,0]-self.cx)/self.fx*z,(uv[:,1]-self.cy)/self.fy*z,z])
-        return (pc@self.rotation.T+self.translation)@attitude.T
+        pc=np.column_stack([(uv[:,0]-self.cx)/self.fx*z,(uv[:,1]-self.cy)/self.fy*z,z]).astype(np.float32)
+        return (pc@self.rotation32.T+self.position32)@np.asarray(attitude,dtype=np.float32).T
 
     @staticmethod
     def feature_mask(gray, depth):
@@ -80,6 +82,7 @@ class RGBDOdometry:
         self.relocalized=False
         self.method='unobserved'
         geometry=self.geometry.project(frame,attitude)
+        self.floor.select_window(frame.depth, attitude, self.geometry.ground.result)
         candidate=self.candidate_surface_reference
         self.candidate_surface_reference=None
         if self.previous is None:
@@ -178,8 +181,10 @@ class CameraPerception:
         f = height/2/np.tan(np.deg2rad(fovy/2))
         fx,fy,cx,cy=intrinsics if intrinsics is not None else (f,f,(width-1)/2,(height-1)/2)
         u,v = np.meshgrid(np.arange(width), np.arange(height))
-        self.rays = np.stack([(u-cx)/fx,(v-cy)/fy,np.ones_like(u)],-1)
+        self.rays = np.stack([(u-cx)/fx,(v-cy)/fy,np.ones_like(u)],-1).astype(np.float32)
         self.camera_position, self.camera_rotation = camera_position, camera_rotation
+        self.position32 = np.asarray(camera_position, dtype=np.float32)
+        self.rotation32 = np.asarray(camera_rotation, dtype=np.float32)
         self.white_memory = []
         self.obstacle_memory = []
         self.rng = np.random.default_rng(4)
@@ -290,20 +295,28 @@ class CameraPerception:
         points = points[(points[:,0]>-.12)&(points[:,0]<1.4)&(abs(points[:,1])<1.4)]
         if len(points)<20:
             return None
+        # Trial scoring is O(trials x points); a uniform cap keeps the same
+        # evidence spread while bounding the per-frame cost on the robot.
+        if len(points)>512:
+            points=points[np.linspace(0,len(points)-1,512).astype(int)]
         lines=[]
         spans=[]
         remaining=points.copy()
         for side in range(2):
             if len(remaining)<15: break
             best=None;bestscore=0;bestdegree=1
-            for trial in range(100):
-                degree=1 if trial<60 else 2
+            trial_x,trial_y=remaining[:,0],remaining[:,1]
+            for trial in range(72):
+                degree=1 if trial<43 else 2
                 sample=remaining[self.rng.choice(len(remaining),degree+1,replace=False)]
                 if np.ptp(sample[:,0])<(.18 if degree==1 else .4):continue
                 try:c=np.r_[np.zeros(2-degree),np.polyfit(sample[:,0],sample[:,1],degree)]
                 except np.linalg.LinAlgError:continue
                 if abs(c[0])>1.5 or abs(c[1])>1.5:continue
-                mask=abs(np.polyval(c,remaining[:,0])-remaining[:,1])<.018
+                # Degree 1 dominates the trial loop; the unrolled form is the
+                # same arithmetic as np.polyval for a padded [0, m, b] vector.
+                predicted=c[1]*trial_x+c[2] if degree==1 else np.polyval(c,trial_x)
+                mask=abs(predicted-trial_y)<.018
                 score=mask.sum()-abs(c[0])*5
                 if score>bestscore:best,bestscore,bestdegree=mask,score,degree
             if best is None or bestscore<12: break
@@ -344,9 +357,9 @@ class CameraPerception:
     def update(self, frame, pose, attitude, ground_plane=None):
         self.map_translation = np.zeros(2)
         rgb, depth = frame.rgb, frame.depth
-        body = (self.rays*depth[...,None])@self.camera_rotation.T+self.camera_position
+        body = (self.rays*depth[...,None])@self.rotation32.T+self.position32
         # Remove pitch/roll using measured attitude, retaining a heading-local frame.
-        level = body@attitude.T
+        level = body@np.asarray(attitude,dtype=np.float32).T
         finite=np.isfinite(depth)&(depth>.15)&(depth<2.7)
         plane=ground_plane if ground_plane is not None else self.ground.estimate(level,finite&(body[...,0]>.30),timestamp=frame.time)
         if not plane.valid:
@@ -367,14 +380,20 @@ class CameraPerception:
         self.white_memory=[(t,p,origin) for t,p,origin in self.white_memory
                            if frame.time-t<60 and np.linalg.norm(origin-pose[:2])<1.4]
         memory=np.vstack([p for _,p,_ in self.white_memory]) if self.white_memory else np.empty((0,2))
+        # Bound the long-lived boundary point set: it grows with run time and
+        # every later step (dedup, obstacle carve-out, lane fallback) is linear
+        # in its size. A uniform cap keeps the same spatial spread.
+        if len(memory)>20000:memory=memory[np.linspace(0,len(memory)-1,20000).astype(int)]
         local=(memory-pose[:2])@r
         recent=[p for t,p,_ in self.white_memory if frame.time-t<2.5]
         fresh=(np.vstack(recent)-pose[:2])@r if recent else np.empty((0,2))
         if len(local):
-            _,ids=np.unique(np.round(local/.012).astype(int),axis=0,return_index=True)
+            quantized=np.round(local/.012).astype(np.int64)
+            _,ids=np.unique((quantized[:,0]<<32)+quantized[:,1],return_index=True)
             local=local[ids]
         if len(fresh):
-            _,ids=np.unique(np.round(fresh/.012).astype(int),axis=0,return_index=True)
+            quantized=np.round(fresh/.012).astype(np.int64)
+            _,ids=np.unique((quantized[:,0]<<32)+quantized[:,1],return_index=True)
             fresh=fresh[ids]
         # Raised surfaces, independent of obstacle color. The robot is excluded
         # by the forward range gate; no segmentation or object IDs are read.
@@ -562,8 +581,13 @@ class CameraPerception:
 
 
 class VisualNavigator:
-    def __init__(self, speed=.22):
+    def __init__(self, speed=.22, observation_lease=.35):
         self.speed=speed;self.command=np.zeros(3);self.perception=None
+        # Freshness window for the last accepted image. It must match the runtime's
+        # lease: perception on the Jetson produces a frame every 0.4--0.7 s, while
+        # the simulator managed 0.07--0.15 s, so a fixed value would either stop the
+        # real robot or accept stale images in simulation.
+        self.observation_lease=float(observation_lease)
         self.path=np.empty((0,2));self.mode='initializing';self.finished=False
         self.finish_target=None;self.finish_normal=None;self.last_good=-1.;self.blocked_since=None
         self.effective_lane=None
@@ -711,7 +735,7 @@ class VisualNavigator:
         brake_forward=False
         gap_command=None
         if self.finished:self.mode='finished'
-        elif p is None or time-p.time>.35 or p.lane is None:
+        elif p is None or time-p.time>self.observation_lease or p.lane is None:
             self.mode='lost_vision'
         else:
             if self.finish_target is not None:

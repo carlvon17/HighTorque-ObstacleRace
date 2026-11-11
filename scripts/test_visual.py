@@ -35,7 +35,7 @@ class VisualTests(unittest.TestCase):
         q=robot.data.sensor('orientation').data
         attitude=Rotation.from_quat(np.r_[q[1:],q[0]]).as_matrix()
         r=self.rig
-        perception=CameraPerception(r.width,r.height,r.fovy,r.camera_position,r.camera_rotation)
+        perception=CameraPerception(r.width,r.height,r.fovy,r.camera_position,r.camera_rotation,intrinsics=r.intrinsics)
         return perception,perception.update(r.camera(robot.data),np.zeros(3),attitude)
 
     def test_measurement_packets_cannot_carry_world_pose_or_map(self):
@@ -57,7 +57,7 @@ class VisualTests(unittest.TestCase):
         nav=VisualNavigator();nav.observe(o,np.zeros(3),0)
         for _ in range(30):nav.update(0,np.zeros(3))
         self.assertGreater(nav.command[0],.1)
-        frame=CameraFrame(.06,np.zeros((360,480,3),np.uint8),np.full((360,480),np.nan))
+        frame=CameraFrame(.06,np.zeros((self.rig.height,self.rig.width,3),np.uint8),np.full((self.rig.height,self.rig.width),np.nan))
         blank=per.update(frame,np.zeros(3),np.eye(3))
         self.assertIsNone(blank.lane)
         nav.observe(blank,np.zeros(3),0)
@@ -113,6 +113,22 @@ class VisualTests(unittest.TestCase):
         self.assertAlmostEqual(nav.update(.3,np.zeros(3))[2],0)
         nav.observe(observation(.36,[.2,.15,0],[]),np.zeros(3),0)
         self.assertGreater(nav.update(.36,np.zeros(3))[2],0)
+
+    def test_observation_lease_tracks_the_onboard_frame_period(self):
+        # The Jetson produces a frame every 0.4--0.7 s. With the simulator's fixed
+        # 0.35 s window every real image was already stale, so the navigator stayed
+        # in lost_vision and the robot never left standing.
+        def observation(t):
+            return Perception(t,np.array([0.,0.,0.]),np.empty((0,2)),np.empty((0,4)),
+                              np.empty((0,2)),.36,np.zeros((1,1,3)))
+        slow=VisualNavigator(.22,1.0)
+        slow.observe(observation(0.),np.zeros(3),0)
+        slow.update(.6,np.zeros(3))
+        self.assertNotEqual(slow.mode,'lost_vision')
+        fast=VisualNavigator(.22,.35)
+        fast.observe(observation(0.),np.zeros(3),0)
+        fast.update(.6,np.zeros(3))
+        self.assertEqual(fast.mode,'lost_vision')
 
 
 if __name__=='__main__':unittest.main()

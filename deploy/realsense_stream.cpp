@@ -6,10 +6,13 @@
 #include <vector>
 
 int main() try {
+    // Perception consumes about 2 frames per second on the Jetson, so the full
+    // 15 fps pair was pure USB traffic and CPU in align.process(). Six is the
+    // lowest rate the D435i profile exposes and leaves three frames per slot.
     rs2::pipeline pipe;
     rs2::config config;
-    config.enable_stream(RS2_STREAM_COLOR, 640, 480, RS2_FORMAT_RGB8, 15);
-    config.enable_stream(RS2_STREAM_DEPTH, 640, 480, RS2_FORMAT_Z16, 15);
+    config.enable_stream(RS2_STREAM_COLOR, 640, 480, RS2_FORMAT_RGB8, 6);
+    config.enable_stream(RS2_STREAM_DEPTH, 640, 480, RS2_FORMAT_Z16, 6);
     auto profile = pipe.start(config);
     auto scale = profile.get_device().first<rs2::depth_sensor>().get_depth_scale();
     rs2::align align(RS2_STREAM_COLOR);
@@ -19,7 +22,7 @@ int main() try {
         << ",\"cy\":" << in.ppy << ",\"distortion_model\":" << int(in.model)
         << ",\"coefficients\":[";
     for (int i=0;i<5;i++) std::cout << (i ? "," : "") << in.coeffs[i];
-    std::cout << "],\"fps\":15,\"depth_scale_m\":" << scale << "}" << std::endl;
+    std::cout << "],\"fps\":6,\"depth_scale_m\":" << scale << "}" << std::endl;
     bool first = true;
     for (;;) {
         auto frames = align.process(pipe.wait_for_frames(first ? 15000 : 3000)).as<rs2::frameset>();

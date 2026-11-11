@@ -11,6 +11,7 @@ import numpy as np
 
 from navigation.command import AMPCommandAdapter
 from navigation.environment import verify_dependencies
+from navigation.floor_map import FloorMap
 from navigation.motion_recovery import MotionRecovery
 from navigation.visual import CameraPerception, Perception, RGBDOdometry, VisualNavigator, rotation2
 
@@ -29,10 +30,13 @@ def core_hashes():
 
 
 class NavigationRuntime:
-    def __init__(self, width, height, intrinsics, camera_position, camera_rotation, speed=.22):
+    def __init__(self, width, height, intrinsics, camera_position, camera_rotation, speed=.22, observation_lease=.35):
         verify_dependencies()
         if not np.isfinite(speed) or not 0 < speed <= .4:
             raise ValueError('Navigation target speed must be within (0, 0.4]')
+        if not np.isfinite(observation_lease) or not 0 < observation_lease <= 2.:
+            raise ValueError('Observation lease must be within (0, 1] s')
+        self.observation_lease = float(observation_lease)
         self.position = np.asarray(camera_position, dtype=float)
         self.camera_rotation = np.asarray(camera_rotation, dtype=float)
         if self.position.shape != (3,) or not np.isfinite(self.position).all():
@@ -40,7 +44,8 @@ class NavigationRuntime:
         self._rotation(self.camera_rotation)
         self.perception = CameraPerception(width, height, 80., self.position, self.camera_rotation, intrinsics)
         self.odometry = RGBDOdometry(width, height, 80., self.position, self.camera_rotation, intrinsics)
-        self.navigator = VisualNavigator(speed)
+        self.floor_map = FloorMap(self.odometry.floor)
+        self.navigator = VisualNavigator(speed, self.observation_lease)
         self.adapter = AMPCommandAdapter()
         self.initial_yaw = None
         self.yaw = 0.
@@ -135,7 +140,7 @@ class NavigationRuntime:
             raise ValueError('Camera resolution differs from calibrated intrinsics')
         usable_pixels = (frame.rgb.max(axis=2)>5) & (frame.rgb.min(axis=2)<250)
         self.rgb_usable = bool(np.count_nonzero(usable_pixels) >= frame.depth.size*.01)
-        if self.last_frame_time is not None and frame.time-self.last_frame_time > .35:
+        if self.last_frame_time is not None and frame.time-self.last_frame_time > self.observation_lease:
             self.good_frames = 0
         tracking_frame = frame if self.rgb_usable else CameraFrame(frame.time, np.zeros_like(frame.rgb), frame.depth)
         xy = self.odometry.update(tracking_frame, frame_attitude, self.xy)
@@ -169,6 +174,20 @@ class NavigationRuntime:
                 self.odometry.inliers=geometry.support
                 self.odometry.method='observed_map'
                 self.odometry.relocalized=True
+        # Search recent textured keyframes after an interruption, before the
+        # local tracker gives up its segment. Hidden boxes stay in odom.
+        previous_time = self.odometry.previous_time
+        if (not self.odometry.accepted and self.rgb_usable and previous_time is not None
+                and frame.time-previous_time > .25):
+            recovered = self.floor_map.update(frame, frame_attitude,
+                self.odometry.geometry.ground.result, self.xy, self.distance, recovering=True)
+            if recovered is not None:
+                xy = recovered
+                self.odometry.previous = None
+                self.odometry.update(frame, frame_attitude, xy)
+                self.odometry.accepted = True
+                self.odometry.relocalized = True
+                self.odometry.method = 'floor_keyframe'
         if self.odometry.accepted:
             self.lost_since = None
         else:
@@ -184,10 +203,13 @@ class NavigationRuntime:
                 self.perception.previous_lane=None
                 self.lost_since=frame.time
                 self.localization_reseeds+=1
+                self.floor_map.start_segment()
         self.distance += float(np.linalg.norm(xy-self.xy))
         self.xy = xy
         frame_pose = np.r_[self.xy, np.arctan2(frame_attitude[1, 0], frame_attitude[0, 0])]
         if self.odometry.accepted and self.rgb_usable:
+            self.floor_map.update(frame, frame_attitude, self.odometry.geometry.ground.result,
+                                  self.xy, self.distance)
             self.observation = self.perception.update(frame, frame_pose, frame_attitude,
                 ground_plane=self.odometry.geometry.ground.result)
             if self.observation.lane is not None and self.observation.lane_observed:
@@ -225,7 +247,7 @@ class NavigationRuntime:
             self.reason = 'disabled'
         elif self.last_imu_time is None or not 0 <= timestamp-self.last_imu_time <= .15:
             self.reason = 'stale_imu'
-        elif self.last_frame_time is None or not 0 <= timestamp-self.last_frame_time <= .35:
+        elif self.last_frame_time is None or not 0 <= timestamp-self.last_frame_time <= self.observation_lease:
             self.reason = 'stale_camera'
         elif not self.rgb_usable:
             self.reason = 'unusable_rgb'
@@ -248,6 +270,10 @@ class NavigationRuntime:
 
     def diagnostic(self):
         return dict(reason=self.reason, mode=self.navigator.mode, pose=self.pose.tolist(),
+                    map_xy=(self.xy+self.floor_map.offset).tolist() if self.floor_map.attached else None,
+                    floor_keyframes=len(self.floor_map.keys), map_revisits=self.floor_map.revisits,
+                    map_tracking_updates=self.floor_map.local_updates,
+                    map_recoveries=self.floor_map.recoveries,
                     turn=self.turn, distance=self.distance, vo_inliers=self.odometry.inliers,
                     vo_accepted=self.odometry.accepted, good_frames=self.good_frames,
                     odometry_method=self.odometry.method,
