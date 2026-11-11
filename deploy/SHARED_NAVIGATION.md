@@ -96,6 +96,8 @@ p50 1.43 s、p95 1.95 s。当时链路上的时效判据是 0.2–0.5 s，运行
 `stale_camera`／`lost_vision`，`good_frames` 只有 1，持续发布零速度：`nav start` 显示已启动，
 机器人却站立不动。本次改动把这三处窗口统一到配置项 `observation_lease_s`（默认 1.0 s，
 同时作用于运行时、导航器和 50 Hz 转发线程），去畸变直接输出到感知分辨率，相机按 6 fps 请求。
+白线拟合的 43 条直线候选改为矩阵化求解并统一打分，抽样顺序与随机数消耗保持不变，
+120 组随机点云与改动前逐位对比一致，桌面单次耗时从 1.61 ms 降到 0.75 ms。
 `perception_scale`（0.25–0.5）决定感知分辨率，降低它以换取帧率。
 每帧的 `remap_ms`／`processing_ms` 写入 `telemetry.jsonl` 和 `vision_summary.json`，
 验收目标是 `processing_ms_p95` 不超过 400 ms。这些数值来自机载测量，尚未在真机整圈中复核。

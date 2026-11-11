@@ -290,6 +290,44 @@ class CameraPerception:
         size = CameraPerception.box_size(tracked, rotation)
         return center, size, normals, offsets, tangent, lower, upper
 
+    def _lane_candidates(self, points):
+        """Score the fixed 43 straight and 29 curved RANSAC candidates.
+
+        The straight trials dominate the loop, so they are drawn in the original
+        order but solved and scored as one matrix: a two-point fit is just the
+        line through those two points, and the greedy selection only keeps the
+        first strictly better score, which argmax reproduces. Quadratic trials
+        stay scalar because there are few and they are cheap.
+        """
+        x, y = points[:, 0], points[:, 1]
+        count = len(points)
+        pairs = np.empty((43, 2), np.int64)
+        for index in range(43):
+            pairs[index] = self.rng.choice(count, 2, replace=False)
+        curves = [points[self.rng.choice(count, 3, replace=False)] for _ in range(29)]
+        x1, y1 = points[pairs[:, 0], 0], points[pairs[:, 0], 1]
+        x2, y2 = points[pairs[:, 1], 0], points[pairs[:, 1], 1]
+        dx = x2-x1
+        usable = abs(dx) >= .18
+        slope = np.divide(y2-y1, dx, out=np.zeros_like(dx), where=usable)
+        usable &= abs(slope) <= 1.5
+        intercept = y1-slope*x1
+        masks = abs(slope[:, None]*x[None, :]+intercept[:, None]-y[None, :]) < .018
+        scores = np.where(usable, masks.sum(axis=1), -np.inf)
+        winner = int(np.argmax(scores))
+        bestscore = float(scores[winner])
+        best = masks[winner] if bestscore > 0 else None
+        bestdegree = 1
+        for sample in curves:
+            if np.ptp(sample[:, 0]) < .4: continue
+            try: c = np.polyfit(sample[:, 0], sample[:, 1], 2)
+            except np.linalg.LinAlgError: continue
+            if abs(c[0]) > 1.5 or abs(c[1]) > 1.5: continue
+            mask = abs((c[0]*x+c[1])*x+c[2]-y) < .018
+            score = mask.sum()-abs(c[0])*5
+            if score > bestscore: best, bestscore, bestdegree = mask, score, 2
+        return best, bestscore, bestdegree
+
     def fit_lane(self, points, reference=None):
         self.lane_support=None
         points = points[(points[:,0]>-.12)&(points[:,0]<1.4)&(abs(points[:,1])<1.4)]
@@ -304,21 +342,7 @@ class CameraPerception:
         remaining=points.copy()
         for side in range(2):
             if len(remaining)<15: break
-            best=None;bestscore=0;bestdegree=1
-            trial_x,trial_y=remaining[:,0],remaining[:,1]
-            for trial in range(72):
-                degree=1 if trial<43 else 2
-                sample=remaining[self.rng.choice(len(remaining),degree+1,replace=False)]
-                if np.ptp(sample[:,0])<(.18 if degree==1 else .4):continue
-                try:c=np.r_[np.zeros(2-degree),np.polyfit(sample[:,0],sample[:,1],degree)]
-                except np.linalg.LinAlgError:continue
-                if abs(c[0])>1.5 or abs(c[1])>1.5:continue
-                # Degree 1 dominates the trial loop; the unrolled form is the
-                # same arithmetic as np.polyval for a padded [0, m, b] vector.
-                predicted=c[1]*trial_x+c[2] if degree==1 else np.polyval(c,trial_x)
-                mask=abs(predicted-trial_y)<.018
-                score=mask.sum()-abs(c[0])*5
-                if score>bestscore:best,bestscore,bestdegree=mask,score,degree
+            best,bestscore,bestdegree=self._lane_candidates(remaining)
             if best is None or bestscore<12: break
             line=np.r_[np.zeros(2-bestdegree),np.polyfit(remaining[best,0],remaining[best,1],bestdegree)]
             if np.ptp(remaining[best,0])<.18:break
