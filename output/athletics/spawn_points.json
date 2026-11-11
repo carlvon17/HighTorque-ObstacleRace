@@ -1,0 +1,31 @@
+{
+  "frame": "Z up, metres, origin at small-circle center on carpet top",
+  "direction": "counterclockwise",
+  "z_note": "Positions specify ground contact. Add robot-specific base standing height.",
+  "starts": [
+    {
+      "id": "01",
+      "position": [
+        0.55,
+        -1.25
+      ],
+      "yaw_degrees": 0
+    },
+    {
+      "id": "02",
+      "position": [
+        1.45,
+        -1.25
+      ],
+      "yaw_degrees": 0
+    },
+    {
+      "id": "03",
+      "position": [
+        2.35,
+        -1.25
+      ],
+      "yaw_degrees": 0
+    }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  "id": "microduck",
+  "label": "MicroDuck Multi-Policy",
+  "labelKey": "node.microduckTemplate",
+  "icon": "bird",
+  "version": "1.2.1",
+  "description": "Browser-only MicroDuck inference with an explicit 61D observation, seven ONNX policies, and a native finite-state policy orchestrator.",
+  "files": ["microduck.preset.yaml", "microduck.py", "microduck_policy.py"],
+  "sourceUrl": "https://huggingface.co/spaces/pollen-robotics/microduck-simulator",
+  "attribution": "Robot assets and policies are adapted from pollen-robotics/microduck-simulator. The upstream repository had no root LICENSE when reviewed on 2026-09-04; confirm redistribution rights before public or commercial use.",
+  "authors": ["Pollen Robotics"],
+  "tags": ["microduck", "multi-policy", "onnx", "mujoco", "state-machine"],
+  "assets": [
+    {
+      "id": "microduck-walking-policy",
+      "path": "assets/models/walking.onnx",
+      "role": "model"
+    },
+    {
+      "id": "microduck-sitstand-policy",
+      "path": "assets/models/sitstand.onnx",
+      "role": "model"
+    },
+    {
+      "id": "microduck-kick-left-policy",
+      "path": "assets/models/kick-left.onnx",
+      "role": "model"
+    },
+    {
+      "id": "microduck-kick-right-policy",
+      "path": "assets/models/kick-right.onnx",
+      "role": "model"
+    },
+    {
+      "id": "microduck-roll-policy",
+      "path": "assets/models/roll.onnx",
+      "role": "model"
+    },
+    {
+      "id": "microduck-ground-pick-policy",
+      "path": "assets/models/ground-pick.onnx",
+      "role": "model"
+    },
+    {
+      "id": "microduck-stand-policy",
+      "path": "assets/models/stand.onnx",
+      "role": "model"
+    }
+  ]
+}

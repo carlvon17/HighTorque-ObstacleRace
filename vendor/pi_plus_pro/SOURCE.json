@@ -1,0 +1,21 @@
+{
+  "captured_date": "2026-11-10",
+  "source_host": "10.149.47.34",
+  "remote_directory": "/home/nvidia/action_library/policy/amp",
+  "policy_name": "walk/pi_plus_amp_1110_policy_1.rknn",
+  "runtime_engine": "amp.trt",
+  "controller_binary_sha256": "e17157bc2ade8a0342b18aad74979e37df1a22c97d169f7ed77416c67f27985d",
+  "sha256": {
+    "amp.yaml": "a31a6dd7b9b77aca9d73f93f812897cb64cdb7f97217bda11d61b4a0c85ed10b",
+    "amp.trt": "49a64fc175dc9719554e246d42e2ccc0fa4dda97f672a66076a9e02dd8b97c13",
+    "param.yaml": "60c5a0aa8014af532bb01d62f214436edfcdfd6c4d34aadfe79519b95b7ed172",
+    "pd.yaml": "fa0f04a3b49d72ac0825a6cfeb523e34ecf1aa68477bd49e8042d3256c7b11a0",
+    "actor.npz": "fc8ad25ac54f87b972c24631cf59d99d8a3c267f3872801e4e0e880b48f241d3",
+    "engine_reference.npz": "b55a3d92905c8d72309187feaf0c30679801a2d22c2dd8688ad4b683f1f2d577",
+    "engine_probe.json": "a992a328dd4faa65c677c9ed7cf7383004bf38482763282c61f7c866aa60ce18",
+    "runtime_reference.npz": "0fa28b62c700afe0c11f2e97282e1c5a0c432721b896cfc937943ddf34c9e773"
+  },
+  "provenance": "Copied from user-owned robot. actor.npz contains FP32 tensors extracted from this exact TensorRT engine, not another pretrained checkpoint.",
+  "audit_directory": "output/deployment/loco_sync_20261110",
+  "redistribution": "Factory asset; no new redistribution license is asserted."
+}

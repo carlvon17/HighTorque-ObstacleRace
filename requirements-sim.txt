@@ -1,0 +1,8 @@
+-r requirements.txt
+torch>=2.6
+PyYAML>=6.0
+scipy>=1.14
+shapely>=2.0
+opencv-python-headless>=4.10
+imageio>=2.36
+imageio-ffmpeg>=0.6

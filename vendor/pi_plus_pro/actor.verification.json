@@ -1,0 +1,10 @@
+{
+  "engine_sha256": "49a64fc175dc9719554e246d42e2ccc0fa4dda97f672a66076a9e02dd8b97c13",
+  "actor_sha256": "fc8ad25ac54f87b972c24631cf59d99d8a3c267f3872801e4e0e880b48f241d3",
+  "reference_sha256": "b55a3d92905c8d72309187feaf0c30679801a2d22c2dd8688ad4b683f1f2d577",
+  "samples": 129,
+  "max_absolute_error": 1.33514404296875e-05,
+  "mean_absolute_error": 6.157989673738484e-07,
+  "passed": true,
+  "method": "Exact FP32 tensors from pinned engine, checked against Jetson TensorRT outputs; no training or fitting."
+}

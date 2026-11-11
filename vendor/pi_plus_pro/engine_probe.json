@@ -1,0 +1,26 @@
+{
+  "engine_sha256": "49a64fc175dc9719554e246d42e2ccc0fa4dda97f672a66076a9e02dd8b97c13",
+  "tensorrt_version": "8.5.2.2",
+  "bindings": [
+    {
+      "name": "obs",
+      "shape": [
+        1,
+        345
+      ],
+      "dtype": "DataType.FLOAT",
+      "input": true
+    },
+    {
+      "name": "actions",
+      "shape": [
+        1,
+        20
+      ],
+      "dtype": "DataType.FLOAT",
+      "input": false
+    }
+  ],
+  "layers": "{\"Layers\": [\"reshape_before_/actor/actor.0/Gemm\"\n,\"/actor/actor.0/Gemm + PWN(/actor/actor.1/Elu)\"\n,\"/actor/actor.2/Gemm + PWN(/actor/actor.1_1/Elu)\"\n,\"/actor/actor.4/Gemm + PWN(/actor/actor.1_2/Elu)\"\n,\"/actor/actor.6/Gemm\"\n,\"reshape_after_/actor/actor.6/Gemm\"\n],\n\"Bindings\": [\"obs\"\n,\"actions\"\n]}\n",
+  "count": 129
+}

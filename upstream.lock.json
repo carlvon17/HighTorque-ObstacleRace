@@ -1,0 +1,241 @@
+{
+  "repository": "HighTorque-Robotics/Mini-Pi-Plus_AMP",
+  "commit": "6a71f08177e0488122264250dbd1bfd4af70097f",
+  "files": [
+    {
+      "path": "Exported_policy/model_27000.pt",
+      "sha": "1b0510836e037672e19f09a7065b7c849ad96971",
+      "size": 17283423
+    },
+    {
+      "path": "Exported_policy/model_30000_15.pt",
+      "sha": "2dd94ae7e297dd52bce17f613543c20616903bd9",
+      "size": 17283423
+    },
+    {
+      "path": "Exported_policy/model_40000.pt",
+      "sha": "4262e9e65d5f43de1bf8fc4ed2b3fe131a7e667a",
+      "size": 17283423
+    },
+    {
+      "path": "LICENSE",
+      "sha": "c0458d05825c58b710824020222fb17d47b945a0",
+      "size": 1954
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/ankle_roll_link_simplify.STL",
+      "sha": "60b9a021c10eaa130b2341e25e103dd304483a82",
+      "size": 1266284
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/base_link.STL",
+      "sha": "3bd1bc434526fb8d0c9b3879b8e1086bcc12e300",
+      "size": 5356784
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/head_pitch_link.STL",
+      "sha": "636fbdca678fed58c1dc5094916996f63a2036d3",
+      "size": 822784
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/head_yaw_link.STL",
+      "sha": "4a45bd2b63c6d04e83f1efbb00aecdab848abb3f",
+      "size": 695184
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/l_ankle_pitch_link.STL",
+      "sha": "1e1a6ef39ca5d1172a657a3aa17cbd1a26e45cdb",
+      "size": 360884
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/l_ankle_roll_link.STL",
+      "sha": "c63293fcfb7edb3e2fbd0f4a5aa8f57bf1b48eb1",
+      "size": 1401784
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/l_calf_link.STL",
+      "sha": "582746ecf3fb6f6afe0cdcc31a5494414e66548d",
+      "size": 1558184
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/l_calf_link_1.STL",
+      "sha": "9f1aa3661963d836f677217cae1672e2faf3ff41",
+      "size": 1146484
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/l_calf_link_2.STL",
+      "sha": "cdea426789a831bdb0f0f7c5b3c18dbdb54b5017",
+      "size": 1146484
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/l_calf_link_3.STL",
+      "sha": "b05d5574abebb651fd63eeabd1ed95c80aa718ce",
+      "size": 89884
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/l_calf_link_4.STL",
+      "sha": "90154e70cbd6b00570dc0bc39f079aeb644636dd",
+      "size": 222584
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/l_calf_link_5.STL",
+      "sha": "d19876c81d853203ddc2eaf27a56ad616bda7a85",
+      "size": 222584
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/l_calf_link_6.STL",
+      "sha": "7e148fdb85801c55e590cb486f44b49e0f780846",
+      "size": 257684
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/l_calf_link_7.STL",
+      "sha": "778ba779aec647217ebb5c7a49cbec53b1f65d35",
+      "size": 284884
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/l_elbow_link.STL",
+      "sha": "ed853bcdb7c36f542215aa147c3eb72a60b50494",
+      "size": 1422184
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/l_hip_pitch_link.STL",
+      "sha": "b7fdbe7445de847176325b5ccb7ec1bd43c915ee",
+      "size": 1267484
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/l_hip_roll_link.STL",
+      "sha": "2fdd7f297b32b90059143e3fcdd42867d5613b05",
+      "size": 901284
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/l_shoulder_pitch_link.STL",
+      "sha": "1969bef987613995a95387447d6f6af0b97b5454",
+      "size": 381284
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/l_shoulder_roll_link.STL",
+      "sha": "c06871bd40c25d8c17ab75b8a1d966924c48aa01",
+      "size": 1453584
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/l_thigh_link.STL",
+      "sha": "44aa35d7f4b7d41467ce843b23b313797983bc26",
+      "size": 388484
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/l_upper_arm_link.STL",
+      "sha": "a4f9a29941e280b482e489fdd48213fe654c78f3",
+      "size": 381284
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/l_wrist_link.STL",
+      "sha": "4061947b9352cea5336c812d9fd5391acfb94d1a",
+      "size": 182284
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/r_ankle_pitch_link.STL",
+      "sha": "1c882626507a21de6303a70d8e5b984d61d53e8e",
+      "size": 360884
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/r_ankle_roll_link.STL",
+      "sha": "22b4ed41e687b91a09af34fe3f4c77d26d207f5c",
+      "size": 1401784
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/r_calf_link.STL",
+      "sha": "4db776059d431d63c349b93c2f8d44ee83a51360",
+      "size": 1558184
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/r_calf_link_1.STL",
+      "sha": "6036bf62dbb38527d3dd67a8ce8da4662be1d97e",
+      "size": 1149484
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/r_calf_link_2.STL",
+      "sha": "b26c3a1f47c82ef8ff157938aa32532e7fa1e323",
+      "size": 1149484
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/r_calf_link_3.STL",
+      "sha": "199f863965535706b24b6ae7128094012d3911e1",
+      "size": 89884
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/r_calf_link_4.STL",
+      "sha": "4595f134569fa2bab378797cfbec1e26768a875b",
+      "size": 222584
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/r_calf_link_5.STL",
+      "sha": "a95c81373c8327c3ab16608f3af7b0b94d6a3e1e",
+      "size": 222584
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/r_calf_link_6.STL",
+      "sha": "cc6c73f215984ac80c2423d8197bd2810325529a",
+      "size": 270484
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/r_calf_link_7.STL",
+      "sha": "79dc2e3cbde40f2af5532c4126e2f9f605ddaa5a",
+      "size": 284884
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/r_elbow_link.STL",
+      "sha": "395e68710e62a580c01a34a3cac5441f9c7b0d01",
+      "size": 1422184
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/r_hip_pitch_link.STL",
+      "sha": "5c3a1954ed32527dbd3676b3e7f366588d7a19ce",
+      "size": 1267484
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/r_hip_roll_link.STL",
+      "sha": "25cdf30c282684446e0780af0d3c5004be04ad24",
+      "size": 901284
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/r_shoulder_pitch_link.STL",
+      "sha": "9b22593f25f2fc62928a63a2385a2119f0c73799",
+      "size": 381284
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/r_shoulder_roll_link.STL",
+      "sha": "f728ab99e414a493bc130fcdf5a51e9c2c6bcad6",
+      "size": 1453584
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/r_thigh_link.STL",
+      "sha": "1923e950456133edfdc127914712678763cc626e",
+      "size": 388484
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/r_upper_arm_link.STL",
+      "sha": "29bf6f7af348e52d7f49d5a84a2384fe761ab625",
+      "size": 381284
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/meshes/r_wrist_link.STL",
+      "sha": "0f77a77aaddfc68c871b9e4ad8716a06b22f485b",
+      "size": 182284
+    },
+    {
+      "path": "legged_lab/assets/hightorque/pi_plus/pi_plus.xml",
+      "sha": "40290ddcdc4a8cee436396f5616f30e68943bdf6",
+      "size": 28035
+    },
+    {
+      "path": "legged_lab/envs/pi_plus/pi_plus_amp_sym_cfg.py",
+      "sha": "2814f56d8144fdf4ee0a0a3119057f9158ceac9f",
+      "size": 16945
+    },
+    {
+      "path": "legged_lab/scripts/sim2sim_pi_plus.py",
+      "sha": "f7075b478db96940443d02e7a2d3436233b3e702",
+      "size": 17138
+    }
+  ]
+}

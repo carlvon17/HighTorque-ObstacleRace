@@ -1,0 +1,64 @@
+{
+  "inner_boundary_centerline_perimeter_m": 19.99269672976361,
+  "outer_boundary_centerline_perimeter_m": 23.134284396630164,
+  "lane_centerline_perimeter_m": 21.563490563047342,
+  "boundary_centerline_separation_m": 0.5,
+  "clear_width_between_tape_edges_m": 0.492,
+  "rule_text_inner_perimeter_m": 19.0,
+  "perimeter_difference_m": 0.9926967297636082,
+  "obstacle_layout_basis": "site_photo_estimate_not_surveyed",
+  "obstacle_centers_xy_m": [
+    [
+      0.65,
+      1.1
+    ],
+    [
+      1.15,
+      1.4
+    ],
+    [
+      1.65,
+      1.1
+    ]
+  ],
+  "obstacle_inner_outer_order": [
+    "inner",
+    "outer",
+    "inner"
+  ],
+  "obstacle_longitudinal_spacing_m": [
+    0.4999999999999999,
+    0.5
+  ],
+  "obstacle_edge_alignment": "box_edge_on_boundary_centerline",
+  "obstacle_appearance": "red_yellow_green_painted_crates",
+  "obstacle_colors_rgb": [
+    [
+      220,
+      45,
+      45
+    ],
+    [
+      230,
+      195,
+      35
+    ],
+    [
+      35,
+      175,
+      70
+    ]
+  ],
+  "assumptions": [
+    "The diagram's 1 m / 2 m arrows are interpreted as inner-boundary radii.",
+    "The 5 m arrow is interpreted as the two circle centers' separation.",
+    "The transition curve is a tangent-continuous cubic Bezier, not dimensioned in the source.",
+    "The 0.5 m lane width is measured between boundary tape centerlines; clear gap is 0.492 m.",
+    "The site photograph supports inner/outer/inner staggering. The 0.5 m longitudinal spacing, 0.65 m first station, exact tape alignment, board construction and yaw remain estimates, not surveyed coordinates.",
+    "Red, yellow and green crate paint is a requested perception robustness test, not an assumed competition color requirement.",
+    "Painted wood boards are visual only. Each obstacle retains a solid 0.2 x 0.2 x 0.4 m collision envelope.",
+    "Start marker diameter (6 cm), carpet extent, thickness, and friction are modeling assumptions.",
+    "Obstacle boxes are fixed; the reference provides dimensions but no mass or dynamics.",
+    "No competition robot or control policy is included."
+  ]
+}

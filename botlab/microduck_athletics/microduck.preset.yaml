@@ -1,0 +1,53 @@
+# Microduck legs calibration. Policy and motor order both match the MJCF actuator order.
+kind: robot
+label: Microduck Legs Robot
+sourceType: url
+autoActuators: false
+actionDimension: 14
+jointQposOffset: 7
+jointQvelOffset: 6
+policyJointOrder: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+motorJointOrder: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
+actionScale: 1
+defaultJointPositions:
+  [
+    0,
+    -0.08726646259971647,
+    -0.457924,
+    -0.004940,
+    0.452984,
+    0.3490658503988659,
+    0.3490658503988659,
+    0,
+    0,
+    0,
+    0.08726646259971647,
+    0.457924,
+    0.004940,
+    -0.452984,
+  ]
+initialQpos:
+  [
+    0.55,
+    -1.25,
+    0.12,
+    1,
+    0,
+    0,
+    0,
+    0,
+    -0.08726646259971647,
+    -0.457924,
+    -0.004940,
+    0.452984,
+    0.3490658503988659,
+    0.3490658503988659,
+    0,
+    0,
+    0,
+    0.08726646259971647,
+    0.457924,
+    0.004940,
+    -0.452984,
+  ]
+initialQvel: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]

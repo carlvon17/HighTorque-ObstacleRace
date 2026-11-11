@@ -1,0 +1,78 @@
+{
+  "archive": "PiPlusPro_SF_12L8A0G2H0W_Z_261010.zip",
+  "archive_sha256": "41a57a5b71cdf83616578af5d2f55088da17ef5978ec96e5e2ff3accca497dc9",
+  "member": "PiPlusPro_SF_12L8A0G2H0W_Z_261010/urdf/PiPlusPro_SF_12L8A0G2H0W_Z_261010.urdf",
+  "extracted_file": "reference/pi_plus_pro_261010/urdf/PiPlusPro_SF_12L8A0G2H0W_Z_261010.urdf",
+  "urdf_sha256": "5169fe5d59eae117c006232b7512a0e28347383187482c05619487f19831a69c",
+  "root_link": "base_link",
+  "camera_chain": [
+    {
+      "joint": "torso_joint",
+      "type": "fixed",
+      "parent": "base_link",
+      "child": "torso_link",
+      "origin": {
+        "xyz": "0 0 0",
+        "rpy": "0 0 0"
+      },
+      "axis": {
+        "xyz": "0 0 0"
+      },
+      "limit": {}
+    },
+    {
+      "joint": "head_yaw_joint",
+      "type": "revolute",
+      "parent": "torso_link",
+      "child": "head_yaw_link",
+      "origin": {
+        "xyz": "0 -0.00025 0.1981",
+        "rpy": "0 0 0"
+      },
+      "axis": {
+        "xyz": "0 0 1"
+      },
+      "limit": {
+        "lower": "-1.5708",
+        "upper": "1.5708",
+        "effort": "3.7",
+        "velocity": "31.416"
+      }
+    },
+    {
+      "joint": "head_pitch_joint",
+      "type": "revolute",
+      "parent": "head_yaw_link",
+      "child": "head_pitch_link",
+      "origin": {
+        "xyz": "0 0 0.0275",
+        "rpy": "0 0 0"
+      },
+      "axis": {
+        "xyz": "0 1 0"
+      },
+      "limit": {
+        "lower": "-1.05",
+        "upper": "0.994",
+        "effort": "3.7",
+        "velocity": "31.416"
+      }
+    },
+    {
+      "joint": "camera_joint",
+      "type": "fixed",
+      "parent": "head_pitch_link",
+      "child": "camera_link",
+      "origin": {
+        "xyz": "0.047642 0.031484 0.071792",
+        "rpy": "0 0 0"
+      },
+      "axis": {
+        "xyz": "0 0 0"
+      },
+      "limit": {}
+    }
+  ],
+  "optical_frames": [],
+  "note": "Mechanical camera_link frame only; optical-center transform is not explicitly defined. Inspected for future extrinsics work; current simulation camera unchanged."
+}

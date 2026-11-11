@@ -1,0 +1,10 @@
+{
+  "robot_type": "pi_plus-S-12L8A0G2H0W",
+  "camera_mount": "movable_head",
+  "extrinsics_verified": false,
+  "camera_position_body_m": [0.09, 0.0, 0.22],
+  "camera_rotation_optical_to_body": [[0.0, -0.7071067811865476, 0.7071067811865476], [-1.0, 0.0, 0.0], [0.0, -0.7071067811865476, -0.7071067811865476]],
+  "imu_alignment_verified": false,
+  "body_from_imu": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+  "note": "Extrinsics are SIMULATION PLACEHOLDERS, not a real calibration. Shadow diagnostic only; no motor publisher exists."
+}

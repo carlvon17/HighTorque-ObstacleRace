@@ -1,0 +1,34 @@
+{
+  "name": "huabei_2026_athletics",
+  "units": "metres",
+  "small_radius": 1.0,
+  "large_radius": 2.0,
+  "center_distance": 5.0,
+  "track_width": 0.5,
+  "line_width": 0.008,
+  "transition_start_x": 2.65,
+  "transition_handle_start": 0.5,
+  "transition_handle_end": 0.28,
+  "large_arc_join_degrees": 135,
+  "carpet_center": [3.0, 0.0],
+  "carpet_dimensions": [10.4, 6.4, 0.012],
+  "carpet_rgb": [19, 125, 78],
+  "friction": [0.8, 0.005, 0.0001],
+  "obstacle_dimensions": [0.2, 0.2, 0.4],
+  "obstacle_appearance": "red_yellow_green_painted_crates",
+  "obstacle_layout_basis": "site_photo_estimate_not_surveyed",
+  "obstacle_spacing_estimate_m": 0.5,
+  "obstacle_edge_alignment": "box_edge_on_boundary_centerline",
+  "obstacles": [
+    {"id": "01", "position": [0.65, 1.10], "yaw_degrees": 0, "edge": "inner", "rgb": [220, 45, 45]},
+    {"id": "02", "position": [1.15, 1.40], "yaw_degrees": 90, "edge": "outer", "rgb": [230, 195, 35]},
+    {"id": "03", "position": [1.65, 1.10], "yaw_degrees": 0, "edge": "inner", "rgb": [35, 175, 70]}
+  ],
+  "starts": [
+    {"id": "01", "position": [0.55, -1.25], "yaw_degrees": 0},
+    {"id": "02", "position": [1.45, -1.25], "yaw_degrees": 0},
+    {"id": "03", "position": [2.35, -1.25], "yaw_degrees": 0}
+  ],
+  "reference_perimeter_m": 19.0,
+  "texture_resolution": [6144, 4096]
+}

@@ -1,0 +1,18 @@
+{
+  "width": 640,
+  "height": 480,
+  "fx": 604.179,
+  "fy": 603.821,
+  "cx": 325.629,
+  "cy": 245.226,
+  "distortion_model": 2,
+  "coefficients": [
+    0,
+    0,
+    0,
+    0,
+    0
+  ],
+  "fps": 15,
+  "depth_scale_m": 0.001
+}

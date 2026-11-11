@@ -1,0 +1,27 @@
+.venv/
+__pycache__/
+*.blend1
+vendor/
+
+.venv-shared/
+
+# Local environments, editor state and generated runs
+.DS_Store
+.playwright-cli/
+.vscode/
+backups/
+tmp/
+runs/
+output/
+MUJOCO_LOG.TXT
+/*.mp4
+/*.zip
+.env
+.env.*
+*.pem
+*.key
+
+# Frozen robot policy assets required by simulation and contract checks
+!vendor/
+vendor/*
+!vendor/pi_plus_pro/

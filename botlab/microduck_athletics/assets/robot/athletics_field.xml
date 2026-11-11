@@ -1,0 +1,55 @@
+<mujocoinclude>
+  <asset>
+    <mesh name="hb_carpet_surface" vertex="-5.2 -3.2 0 5.2 -3.2 0 5.2 3.2 0 -5.2 3.2 0 -5.2 -3.2 -0.012 5.2 -3.2 -0.012 5.2 3.2 -0.012 -5.2 3.2 -0.012" face="0 1 2 0 2 3 4 6 5 4 7 6 0 4 5 0 5 1 1 5 6 1 6 2 2 6 7 2 7 3 3 7 4 3 4 0" texcoord="0 0 1 0 1 1 0 1 0 0 1 0 1 1 0 1" />
+    <texture name="hb_carpet_texture" type="2d" file="assets/carpet.png" />
+    <material name="hb_carpet_material" texture="hb_carpet_texture" texrepeat="1 1" texuniform="false" rgba="1 1 1 1" reflectance="0" specular="0" shininess="0" />
+  </asset>
+  <worldbody>
+    <body name="hb_field" pos="0 0 0">
+      <geom name="hb_carpet_visual" type="mesh" pos="3.0 0.0 0.0001" material="hb_carpet_material" contype="0" conaffinity="0" group="1" mesh="hb_carpet_surface" />
+      <geom name="hb_carpet_collision" type="box" pos="3.0 0.0 -0.006" size="5.2 3.2 0.006" rgba="0 0 0 0" friction="0.8 0.005 0.0001" condim="3" contype="1" conaffinity="1" group="3" />
+      <body name="hb_obstacle_01" pos="0.65 1.1 0.2" quat="1.0 0 0 0.0">
+        <geom name="hb_obstacle_geom_01" type="box" size="0.1 0.1 0.2" rgba="0 0 0 0" group="3" friction="0.8 0.005 0.0001" contype="1" conaffinity="1" />
+        <geom name="hb_wood_01_cap_-1" type="box" pos="0 0 -0.194" size="0.1 0.1 0.006" rgba="0.862745 0.823529 0.717647 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_01_panel_-1" type="box" pos="0 -0.094 0" size="0.08800000000000001 0.006 0.188" rgba="0.823529 0.784314 0.682353 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_01_slat_-1_0" type="box" pos="-0.094 -0.06248000000000001 0" size="0.006 0.02552 0.188" rgba="0.811765 0.772549 0.674510 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_01_slat_-1_1" type="box" pos="-0.094 0 0" size="0.006 0.02552 0.188" rgba="0.835294 0.796078 0.694118 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_01_slat_-1_2" type="box" pos="-0.094 0.06248000000000001 0" size="0.006 0.02552 0.188" rgba="0.850980 0.811765 0.709804 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_01_cap_1" type="box" pos="0 0 0.194" size="0.1 0.1 0.006" rgba="0.862745 0.823529 0.717647 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_01_panel_1" type="box" pos="0 0.094 0" size="0.08800000000000001 0.006 0.188" rgba="0.823529 0.784314 0.682353 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_01_slat_1_0" type="box" pos="0.094 -0.06248000000000001 0" size="0.006 0.02552 0.188" rgba="0.811765 0.772549 0.674510 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_01_slat_1_1" type="box" pos="0.094 0 0" size="0.006 0.02552 0.188" rgba="0.835294 0.796078 0.694118 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_01_slat_1_2" type="box" pos="0.094 0.06248000000000001 0" size="0.006 0.02552 0.188" rgba="0.850980 0.811765 0.709804 1" group="1" contype="0" conaffinity="0" />
+      </body>
+      <body name="hb_obstacle_02" pos="1.15 1.4 0.2" quat="0.7071067811865476 0 0 0.7071067811865475">
+        <geom name="hb_obstacle_geom_02" type="box" size="0.1 0.1 0.2" rgba="0 0 0 0" group="3" friction="0.8 0.005 0.0001" contype="1" conaffinity="1" />
+        <geom name="hb_wood_02_cap_-1" type="box" pos="0 0 -0.194" size="0.1 0.1 0.006" rgba="0.862745 0.823529 0.717647 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_02_panel_-1" type="box" pos="0 -0.094 0" size="0.08800000000000001 0.006 0.188" rgba="0.823529 0.784314 0.682353 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_02_slat_-1_0" type="box" pos="-0.094 -0.06248000000000001 0" size="0.006 0.02552 0.188" rgba="0.811765 0.772549 0.674510 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_02_slat_-1_1" type="box" pos="-0.094 0 0" size="0.006 0.02552 0.188" rgba="0.835294 0.796078 0.694118 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_02_slat_-1_2" type="box" pos="-0.094 0.06248000000000001 0" size="0.006 0.02552 0.188" rgba="0.850980 0.811765 0.709804 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_02_cap_1" type="box" pos="0 0 0.194" size="0.1 0.1 0.006" rgba="0.862745 0.823529 0.717647 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_02_panel_1" type="box" pos="0 0.094 0" size="0.08800000000000001 0.006 0.188" rgba="0.823529 0.784314 0.682353 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_02_slat_1_0" type="box" pos="0.094 -0.06248000000000001 0" size="0.006 0.02552 0.188" rgba="0.811765 0.772549 0.674510 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_02_slat_1_1" type="box" pos="0.094 0 0" size="0.006 0.02552 0.188" rgba="0.835294 0.796078 0.694118 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_02_slat_1_2" type="box" pos="0.094 0.06248000000000001 0" size="0.006 0.02552 0.188" rgba="0.850980 0.811765 0.709804 1" group="1" contype="0" conaffinity="0" />
+      </body>
+      <body name="hb_obstacle_03" pos="1.65 1.1 0.2" quat="1.0 0 0 0.0">
+        <geom name="hb_obstacle_geom_03" type="box" size="0.1 0.1 0.2" rgba="0 0 0 0" group="3" friction="0.8 0.005 0.0001" contype="1" conaffinity="1" />
+        <geom name="hb_wood_03_cap_-1" type="box" pos="0 0 -0.194" size="0.1 0.1 0.006" rgba="0.862745 0.823529 0.717647 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_03_panel_-1" type="box" pos="0 -0.094 0" size="0.08800000000000001 0.006 0.188" rgba="0.823529 0.784314 0.682353 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_03_slat_-1_0" type="box" pos="-0.094 -0.06248000000000001 0" size="0.006 0.02552 0.188" rgba="0.811765 0.772549 0.674510 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_03_slat_-1_1" type="box" pos="-0.094 0 0" size="0.006 0.02552 0.188" rgba="0.835294 0.796078 0.694118 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_03_slat_-1_2" type="box" pos="-0.094 0.06248000000000001 0" size="0.006 0.02552 0.188" rgba="0.850980 0.811765 0.709804 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_03_cap_1" type="box" pos="0 0 0.194" size="0.1 0.1 0.006" rgba="0.862745 0.823529 0.717647 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_03_panel_1" type="box" pos="0 0.094 0" size="0.08800000000000001 0.006 0.188" rgba="0.823529 0.784314 0.682353 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_03_slat_1_0" type="box" pos="0.094 -0.06248000000000001 0" size="0.006 0.02552 0.188" rgba="0.811765 0.772549 0.674510 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_03_slat_1_1" type="box" pos="0.094 0 0" size="0.006 0.02552 0.188" rgba="0.835294 0.796078 0.694118 1" group="1" contype="0" conaffinity="0" />
+        <geom name="hb_wood_03_slat_1_2" type="box" pos="0.094 0.06248000000000001 0" size="0.006 0.02552 0.188" rgba="0.850980 0.811765 0.709804 1" group="1" contype="0" conaffinity="0" />
+      </body>
+      <site name="hb_start_01" pos="0.55 -1.25 0.002" type="sphere" size="0.015" rgba="0 0 0 0" group="3" />
+      <site name="hb_start_02" pos="1.45 -1.25 0.002" type="sphere" size="0.015" rgba="0 0 0 0" group="3" />
+      <site name="hb_start_03" pos="2.35 -1.25 0.002" type="sphere" size="0.015" rgba="0 0 0 0" group="3" />
+    </body>
+  </worldbody>
+</mujocoinclude>

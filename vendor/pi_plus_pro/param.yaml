@@ -1,0 +1,11 @@
+param:
+- name: amp
+  type: walk
+  config_path: amp.yaml
+  policy_path: amp
+  remark: amp走路
+  no_key: true
+  require:
+  - amp.yaml
+  - amp.rknn
+  - amp.trt
