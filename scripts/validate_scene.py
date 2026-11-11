@@ -1,6 +1,8 @@
 """Verify geometry, actual MuJoCo contacts, relocatable includes and rendered assets."""
+import argparse
 import json
 import math
+import sys
 import tempfile
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -10,7 +12,13 @@ import numpy as np
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "output/athletics"
+sys.path.insert(0, str(ROOT))
+from sim.field import DEFAULT_BEND, FIELD_DIRS
+
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--bend-profile", choices=FIELD_DIRS, default=DEFAULT_BEND)
+profile = parser.parse_args().bend_profile
+OUT = FIELD_DIRS[profile]
 MJ = OUT / "mujoco"
 C = json.loads((ROOT / "scene_config.json").read_text())
 G = json.loads((OUT / "geometry.json").read_text())
@@ -19,8 +27,43 @@ data = mujoco.MjData(model)
 mujoco.mj_forward(model, data)
 inner, outer = np.array(G["inner"]), np.array(G["outer"])
 assert np.isfinite(inner).all() and np.isfinite(outer).all()
-widths = np.linalg.norm(outer-inner, axis=1)
+if profile == "smooth":
+    widths = np.linalg.norm(outer-inner, axis=1)
+else:
+    # The joins are staggered. Measure perpendicular to each straight or arc.
+    d = C["center_distance"]
+    dimensions = []
+    for points, offset in ((inner, 0.), (np.array(G["center"]), C["track_width"]/2), (outer, C["track_width"])):
+        small, large = C["small_radius"] + offset, C["large_radius"] + offset
+        join_x = d - math.sqrt(large**2 - small**2)
+        x, y = points.T
+        straight = (x >= 0) & (x < join_x - 1e-9)
+        on_big = x >= join_x - 1e-9
+        on_small = ~(straight | on_big)
+        distances = [np.abs(y[straight]), np.hypot(x[on_small], y[on_small]), np.hypot(x[on_big]-d, y[on_big])]
+        for values, expected in zip(distances, (small, small, large)):
+            np.testing.assert_allclose(values, expected, atol=1e-9)
+        dimensions.append([values.mean() for values in distances])
+        for sign in (-1., 1.):
+            join = np.array([join_x, sign*small])
+            idx = np.argmin(np.linalg.norm(points-join, axis=1))
+            np.testing.assert_allclose(points[idx], join, atol=1e-9)
+            incoming = points[idx] - points[idx-1]
+            outgoing = points[(idx+1) % len(points)] - points[idx]
+            cosine = incoming @ outgoing / (np.linalg.norm(incoming)*np.linalg.norm(outgoing))
+            # The first arc chord differs from the true tangent by half a sample.
+            assert abs(math.acos(cosine) - math.acos(small/large)) < math.radians(.25)
+    widths = np.array(dimensions[-1]) - dimensions[0]
 assert np.max(abs(widths-C["track_width"])) < 1e-9
+
+with Image.open(MJ / "assets/carpet.png") as carpet:
+    size = np.array(C["carpet_dimensions"][:2])
+    low = np.array(C["carpet_center"]) - size/2
+    for points in (inner, outer):
+        uv = (points-low)/size
+        uv[:, 1] = 1-uv[:, 1]
+        pixels = np.rint(uv*(np.array(carpet.size)-1)).astype(int)
+        assert all(carpet.getpixel(tuple(p)) == (246, 248, 239) for p in pixels)
 assert model.ngeom == 35 and model.nsite == 3 and model.nq == 0
 collision_count=int(np.count_nonzero(model.geom_contype | model.geom_conaffinity))
 assert collision_count == 4
@@ -80,6 +123,16 @@ with mujoco.Renderer(model,height=1280,width=1920) as renderer:
     renderer.update_scene(data,camera=cam)
     Image.fromarray(renderer.render()).save(OUT / "mujoco_overview.png")
 
-report={"status":"passed","mujoco_version":mujoco.__version__,"track_width_min_m":float(widths.min()),"track_width_max_m":float(widths.max()),"static_collision_geoms":collision_count,"noncolliding_visual_geoms":model.ngeom-collision_count,"spawn_sites":3,"obstacle_dimensions_m":C["obstacle_dimensions"],"obstacle_positions_xy_m":[o["position"] for o in C["obstacles"]],"edge_order":[o["edge"] for o in C["obstacles"]],"visual_boards_inside_collision_envelope":True,"layout_accuracy":"photo estimate; not surveyed","relocated_include_and_texture":"passed","sphere_drop_tests":results,"robot_controller_tested":False}
+# Same external inspection view for both fields, looking along the 01 approach.
+with mujoco.Renderer(model, height=550, width=640) as renderer:
+    cam = mujoco.MjvCamera()
+    cam.azimuth, cam.elevation = -21.8, -37.25
+    cam.distance = 1.49 / math.sin(math.radians(-cam.elevation))
+    cam.lookat[:] = [3.118, -1.359, 0.]
+    model.vis.global_.fovy = 34.
+    renderer.update_scene(data, camera=cam)
+    Image.fromarray(renderer.render()).save(OUT / "bend_entry.png")
+
+report={"status":"passed","bend_profile":profile,"mujoco_version":mujoco.__version__,"track_width_min_m":float(widths.min()),"track_width_max_m":float(widths.max()),"static_collision_geoms":collision_count,"noncolliding_visual_geoms":model.ngeom-collision_count,"spawn_sites":3,"obstacle_dimensions_m":C["obstacle_dimensions"],"obstacle_positions_xy_m":[o["position"] for o in C["obstacles"]],"edge_order":[o["edge"] for o in C["obstacles"]],"visual_boards_inside_collision_envelope":True,"layout_accuracy":"photo estimate; not surveyed","relocated_include_and_texture":"passed","sphere_drop_tests":results,"robot_controller_tested":False}
 (OUT / "validation.json").write_text(json.dumps(report,indent=2))
 print(json.dumps(report,indent=2))

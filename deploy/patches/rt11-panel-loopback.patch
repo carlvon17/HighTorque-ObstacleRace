@@ -1,0 +1,183 @@
+diff --git a/deploy/navigation_cli.py b/deploy/navigation_cli.py
+index 6638f60..2e889bc 100644
+--- a/deploy/navigation_cli.py
++++ b/deploy/navigation_cli.py
+@@ -140,7 +140,10 @@ def follow_lap(record):
+             if not panel_announced:
+                 panel=read_json(output/'box-panel.json')
+                 if panel.get('url'):
+-                    print('RT11 箱区调参面板  '+panel['url'],flush=True)
++                    if os.environ.get('SSH_CONNECTION'):
++                        print('RT11 已配对的操作 Mac 打开  http://127.0.0.1:18760/local',flush=True)
++                    print('RT11 机器人本机打开  http://127.0.0.1:18761/local',flush=True)
++                    print('RT11 局域网直连  '+panel['url'],flush=True)
+                     panel_announced=True
+             state = task_status(record)
+             row, vision_age = latest_row(vision/'telemetry.jsonl')
+diff --git a/deploy/rt11_mac_panel_watch.py b/deploy/rt11_mac_panel_watch.py
+index 455120d..d273d82 100644
+--- a/deploy/rt11_mac_panel_watch.py
++++ b/deploy/rt11_mac_panel_watch.py
+@@ -2,6 +2,10 @@
+ import hashlib
+ import hmac
+ import json
++from http.client import HTTPConnection, HTTPException
++from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++from threading import Thread
++from urllib.parse import urlsplit
+ import secrets
+ import select
+ import socket
+@@ -32,13 +36,100 @@ def listen():
+     return sock
+ 
+ 
++LOCAL_PORT = 18760
++LOCAL_URL = 'http://127.0.0.1:' + str(LOCAL_PORT)
++WAIT_PAGE = """<!doctype html><html lang="zh-CN"><meta charset="utf-8">
++<meta name="viewport" content="width=device-width,initial-scale=1">
++<meta http-equiv="refresh" content="2;url=/local"><title>RT11 箱区调参</title>
++<body style="font:18px/1.6 system-ui;padding:3em;background:#f1f5f1;color:#153a32">
++<h1>等待 RT11 启动</h1><p>保持这个页面打开。机器人面板上线后会自动连接。</p></body></html>""".encode()
++
++
++def current_session(client, base, key):
++    nonce = secrets.token_hex(16)
++    with client.open(base + '/session?nonce=' + nonce, timeout=1.2) as response:
++        advert = json.loads(response.read(2048))
++    session = session_id(advert)
++    if not hmac.compare_digest(advert['proof'], signature(key, 'open/' + session + '/' + nonce)):
++        raise ValueError('Unpaired robot')
++    return session
++
++
++class LocalPanel(BaseHTTPRequestHandler):
++    """Only relay RT11 panel routes. The browser sends its own per-lap token."""
++    def log_message(self, *args):
++        pass
++
++    def reply(self, status, body=b'', mime='application/json', location=None):
++        self.send_response(status)
++        self.send_header('Content-Type', mime)
++        self.send_header('Content-Length', str(len(body)))
++        self.send_header('Cache-Control', 'no-store')
++        self.send_header('Referrer-Policy', 'no-referrer')
++        self.send_header('X-Frame-Options', 'DENY')
++        if location:
++            self.send_header('Location', location)
++        self.end_headers()
++        try:
++            self.wfile.write(body)
++        except (BrokenPipeError, ConnectionResetError):
++            pass
++
++    def handle_panel(self):
++        if self.headers.get('Host') not in ('127.0.0.1:' + str(LOCAL_PORT), 'localhost:' + str(LOCAL_PORT)):
++            return self.reply(403)
++        method = self.command
++        allowed = ('/', '/api/state', '/local') if method == 'GET' else ('/api/settings',)
++        if self.path not in allowed:
++            return self.reply(404)
++        base = self.server.robot_base
++        try:
++            if self.path == '/local':
++                session = current_session(self.server.client, base, self.server.key)
++                token = signature(self.server.key, 'panel/' + session)
++                return self.reply(302, location='/#' + token)
++            body = None
++            headers = {}
++            if self.path.startswith('/api/'):
++                headers['Authorization'] = self.headers.get('Authorization', '')
++            if method == 'POST':
++                size = int(self.headers.get('Content-Length', 0))
++                if not 0 < size <= 2048:
++                    return self.reply(413)
++                if self.headers.get_content_type() != 'application/json':
++                    return self.reply(415)
++                headers['Content-Type'] = 'application/json'
++                body = self.rfile.read(size)
++            remote = urlsplit(base)
++            upstream = HTTPConnection(remote.hostname, remote.port, timeout=2)
++            try:
++                upstream.request(method, self.path, body=body, headers=headers)
++                response = upstream.getresponse()
++                return self.reply(response.status, response.read(256 * 1024),
++                                  response.getheader('Content-Type', 'application/json'))
++            finally:
++                upstream.close()
++        except (OSError, HTTPException, ValueError, KeyError, TypeError):
++            if self.path in ('/local', '/'):
++                return self.reply(200, WAIT_PAGE, 'text/html; charset=utf-8')
++            return self.reply(503, b'{}')
++
++    do_GET = handle_panel
++    do_POST = handle_panel
++
++
+ def watch():
+     folder = Path(__file__).resolve().parent
+     address = folder / 'robot-url'
+     base = address.read_text().strip()
+     key = (folder / 'pair.key').read_bytes()
+     client = build_opener(ProxyHandler({}))
+-    marker = folder / 'last-session'
++    server = ThreadingHTTPServer(('127.0.0.1', LOCAL_PORT), LocalPanel)
++    server.robot_base = base
++    server.key = key
++    server.client = client
++    Thread(target=server.serve_forever, daemon=True).start()
++    marker = folder / 'last-local-session'
+     last = marker.read_text() if marker.exists() else ''
+     sock = listen()
+     while True:
+@@ -51,15 +142,11 @@ def watch():
+                     base = 'http://' + peer[0] + ':18761'
+             elif sock is None:
+                 time.sleep(2)
+-            nonce = secrets.token_hex(16)
+-            with client.open(base + '/session?nonce=' + nonce, timeout=1.2) as response:
+-                advert = json.loads(response.read(2048))
+-            session = session_id(advert)
+-            proof = signature(key, 'open/' + session + '/' + nonce)
+-            if session == last or not hmac.compare_digest(advert['proof'], proof):
++            session = current_session(client, base, key)
++            server.robot_base = base
++            if session == last:
+                 continue
+-            token = signature(key, 'panel/' + session)
+-            subprocess.run(['/usr/bin/open', base + '/#' + token], check=True, timeout=8)
++            subprocess.run(['/usr/bin/open', LOCAL_URL + '/local'], check=True, timeout=8)
+             marker.write_text(session)
+             address.write_text(base)
+             last = session
+diff --git a/release_manifest.json b/release_manifest.json
+index 32d11a1..a8ab524 100644
+--- a/release_manifest.json
++++ b/release_manifest.json
+@@ -77,7 +77,7 @@
+     "deploy/line_trial.py": "e15784b100c27b8ea058f207ab8ab9c02abfb5ebac0a21ba28a1c84cff8590f7",
+     "deploy/nav": "0642af455503366fdb684ed0300e316ac86fa3c425fc8064ec425f7097fa2a15",
+     "deploy/navigation_buttons.py": "d103b1133b810ccee63e3df261754162cb038952e74c51c6f73e06df07c17a79",
+-    "deploy/navigation_cli.py": "4da3240e80e21993669333d34270ad27b5700ab76ba9db3271f49771ff4131de",
++    "deploy/navigation_cli.py": "6739f1ee3efda6fa7c602ccfa01ab778c6286cdd6a32d5e2a0882690e8c88757",
+     "deploy/preview_camera.py": "b4c7f0a4fc1c0ff53b969ef3f9a463b4b1c830852ce264cc6665faa14aaf3f02",
+     "deploy/pro_config.json": "14994d6824caf2a406e4190479de2f52fe13cbcda119a9e3f0ebc55768385623",
+     "deploy/pro_head_model.py": "6199d9cf46fcba12ef84018e1d4f28ee767f28ec0c668731b146b988e6fdafe6",
+@@ -85,7 +85,7 @@
+     "deploy/realsense_stream.cpp": "d95dab1f462d11ecad497dd0cc5330e25507ade199525e868eecfb1f6dbfe49c",
+     "deploy/requirements-navigation.txt": "8bf974f4724c478b9d4a28341f8dbb16e4fefaf5c50ec0b08aa41f858bc697cc",
+     "deploy/reset_camera.cpp": "63abaa0853ecdcfe4658c9da51f79df63d95049aa7b3d5a6370cab8d84c18808",
+-    "deploy/rt11_mac_panel_watch.py": "6df369426d77cbf72ba650778bf3b6f1246f642cab11d4a690666d4455c083a9",
++    "deploy/rt11_mac_panel_watch.py": "e7ac479ae32b156cf6e2070d735752a7d28b1dc2c712c4d6c393d884aa2b96b2",
+     "deploy/run_navigation_buttons.sh": "8327022110a897d02ad6364c6be352cbbf94d0624ef2300f3a98fb58faae5b64",
+     "deploy/run_shadow.sh": "cf3ae734c5a44d2e6f6560f9db682f5d19a0ed63c0416c86976492019b4f6fd9",
+     "deploy/shadow.py": "e4dd5d1ee718cded07baa9f5fc62a7244fc1a5f94a8046ab14e2b1585e05e58b",
+@@ -151,6 +151,6 @@
+   "real_motion_requires": "verified camera/IMU calibration, current sensors, immutable AMP identity, sole guarded publisher",
+   "nostop_policy": "Mission duration inherited from rt10; local manoeuvres may request zero velocity.",
+   "parent_release_id": "shared_nav_20261111_rt11",
+-  "parent_manifest_sha256": "2d386ce2d8feb0b918421dccfce1f7c5a6545b702710a622d12862acd9d26cf5",
++  "parent_manifest_sha256": "f2aa243f8e2c486dacf119465ef2f21a5a368388c8884dc59fb9edb67552298d",
+   "validation_scope": "Static RT11 controller, HTTP, and two-browser checks. No simulation or robot motion for this update."
+ }

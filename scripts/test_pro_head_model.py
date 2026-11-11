@@ -1,4 +1,5 @@
 """Cross-check the supplied URDF head chain against its independent MJCF."""
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -8,6 +9,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from deploy.pro_head_model import ProHeadModel
+from sim.robot import build_model
 
 ASSET = ROOT/'reference/robot/PiPlusPro_SF_12L8A0G2H0W_Z_261010'
 
@@ -35,6 +37,26 @@ class ProHeadModelTests(unittest.TestCase):
             actual[:3, :3] = rb.T@data.xmat[camera].reshape(3, 3)
             actual[:3, 3] = rb.T@(data.xpos[camera]-data.xpos[base])
             np.testing.assert_allclose(self.head.camera_link_transform(angles), actual, atol=1e-10)
+
+    def test_race_scene_starts_at_feedback_and_preserves_absolute_joint_angles(self):
+        model, _ = build_model(no_obstacles=True)
+        data = mujoco.MjData(model)
+        reference = json.loads((ROOT/'deploy/task_head_pose.json').read_text())['measured_joint_reference_rad']
+        camera = model.camera('nav_camera').id
+        link = model.body('camera_link').id
+        self.assertEqual(model.cam_bodyid[camera], link)
+        for name, angle in reference.items():
+            self.assertAlmostEqual(float(data.joint(name).qpos[0]), angle)
+        for yaw, pitch in ((0., 0.), (.3, -.2), (0., reference['head_pitch_joint'])):
+            angles = {'head_pitch_joint': pitch, 'head_yaw_joint': yaw}
+            for name, angle in angles.items():
+                data.joint(name).qpos[0] = angle
+            mujoco.mj_forward(model, data)
+            expected = self.head.camera_link_transform(angles)
+            base = data.body('base_link')
+            rb = base.xmat.reshape(3, 3)
+            np.testing.assert_allclose(rb.T @ (data.xpos[link]-base.xpos), expected[:3, 3], atol=1e-10)
+            np.testing.assert_allclose(rb.T @ data.xmat[link].reshape(3, 3), expected[:3, :3], atol=1e-10)
 
     def test_rejects_observed_out_of_model_range(self):
         with self.assertRaises(ValueError):

@@ -74,5 +74,5 @@
     }
   ],
   "optical_frames": [],
-  "note": "Mechanical camera_link frame only; optical-center transform is not explicitly defined. Inspected for future extrinsics work; current simulation camera unchanged."
+  "note": "Mechanical camera_link frame only; optical-center transform is not explicitly defined. The default simulation uses the corresponding supplied Pro MJCF and the optical mount estimate in sim/pro_camera_mount.json."
 }

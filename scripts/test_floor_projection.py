@@ -44,6 +44,30 @@ class FloorProjectionTests(unittest.TestCase):
         self.assertIsNotNone(projected)
         self.assertTrue(np.isfinite(projected).all())
 
+    def test_window_moves_inside_shallower_view_and_stays_registered(self):
+        # Start in the forward-leaning standby pose, then straighten the torso.
+        import json
+        from navigation.floor_odometry import FloorOdometry
+        root = Path(__file__).resolve().parents[1]
+        camera = json.loads((root/'deploy/pro_config.json').read_text())
+        sensor = json.loads((root/'sim/d435i_camera.json').read_text())
+        k = [sensor['fx']/2, sensor['fy']/2, (sensor['cx']+.5)/2-.5, (sensor['cy']+.5)/2-.5]
+        floor = FloorOdometry(k, camera['camera_position_body_m'], camera['camera_rotation_optical_to_body'])
+        floor.select_window(np.full((240, 320), np.nan), fixtures.attitude(0., np.deg2rad(5.)), self.plane)
+        selected = floor.x.copy()
+        self.assertGreater(selected.min(), .45)
+        floor.select_window(np.full((240, 320), np.nan), np.eye(3), self.plane)
+        np.testing.assert_array_equal(selected, floor.x)
+
+    def test_selection_finds_measured_depth_around_a_near_hole(self):
+        holes = self.depth.copy()
+        # Occlude only the first few centimetres of the nominal patch.
+        holes[np.rint(self.map_y[:7]).astype(int), np.rint(self.map_x[:7]).astype(int)] = np.nan
+        self.assertIsNone(self.project(holes))
+        self.floor.select_window(holes, self.attitude, self.plane)
+        self.assertGreater(self.floor.x.min(), .45)
+        self.assertIsNotNone(self.project(holes))
+
     def test_non_nearest_interpolation_sources_require_valid_depth(self):
         original_nearest = cv2.remap(self.depth, self.map_x, self.map_y, cv2.INTER_NEAREST)
         for missing in (np.nan, np.inf, 0.):

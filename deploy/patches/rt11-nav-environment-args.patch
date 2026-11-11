@@ -1,0 +1,38 @@
+diff --git a/deploy/nav b/deploy/nav
+index a262ec5..fd449c5 100755
+--- a/deploy/nav
++++ b/deploy/nav
+@@ -2,6 +2,10 @@
+ set -eo pipefail
+ nav_script="$(readlink -f "${BASH_SOURCE[0]}")"
+ nav_root="$(cd "$(dirname "$nav_script")/.." && pwd)"
+-source /opt/ros/noetic/setup.bash
+-source /home/nvidia/sim2real/install/setup.bash
++# Catkin sources shell code generated from its own positional arguments.
++load_navigation_environment() {
++    source /opt/ros/noetic/setup.bash
++    source /home/nvidia/sim2real/install/setup.bash
++}
++load_navigation_environment
+ exec "$nav_root/.venv/bin/python" "$nav_root/deploy/navigation_cli.py" "$@"
+diff --git a/release_manifest.json b/release_manifest.json
+index 9141229..0c92ea1 100644
+--- a/release_manifest.json
++++ b/release_manifest.json
+@@ -75,7 +75,7 @@
+     "deploy/launch_line_trial.py": "7cd1616047462ac76c05f8290ba06ae7b4ae7847f1ad69d3693e2467edc329a4",
+     "deploy/line_follow_core.py": "3cc5fc28b97302636e2760bb8d33436006e26a31cd49847ace43d1d0a3a8cb38",
+     "deploy/line_trial.py": "e15784b100c27b8ea058f207ab8ab9c02abfb5ebac0a21ba28a1c84cff8590f7",
+-    "deploy/nav": "0642af455503366fdb684ed0300e316ac86fa3c425fc8064ec425f7097fa2a15",
++    "deploy/nav": "f83b5ad477b2c4479eab6d61edf303a1c9c87ccc06a58ea0f9acc13bda155bf1",
+     "deploy/navigation_buttons.py": "d103b1133b810ccee63e3df261754162cb038952e74c51c6f73e06df07c17a79",
+     "deploy/navigation_cli.py": "4acbcda8bdc280d3232a2f1f9c3284b597f0793f3cd6ed2e36920cda3022a680",
+     "deploy/preview_camera.py": "b4c7f0a4fc1c0ff53b969ef3f9a463b4b1c830852ce264cc6665faa14aaf3f02",
+@@ -152,6 +152,6 @@
+   "real_motion_requires": "verified camera/IMU calibration, current sensors, immutable AMP identity, sole guarded publisher",
+   "nostop_policy": "Mission duration inherited from rt10; local manoeuvres may request zero velocity.",
+   "parent_release_id": "shared_nav_20261111_rt11",
+-  "parent_manifest_sha256": "8d57f522e7e3014340fa6435f1ca61baac10f4e956af91004d665f58037fbf37",
++  "parent_manifest_sha256": "4c8c880c55cdd4b14a13ed74912e9e78a21a6baeeb75a69226c6ac1386f81a33",
+   "validation_scope": "RT11 CLI startup, controller and panel regression tests without robot motion or simulation."
+ }

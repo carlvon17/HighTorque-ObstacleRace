@@ -4,6 +4,7 @@ The navigation packet deliberately has no global position, ground-truth velocity
 contact IDs, segmentation IDs, obstacle coordinates, or track geometry.
 """
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import xml.etree.ElementTree as ET
 import cv2
@@ -30,19 +31,23 @@ class CameraFrame:
 
 class SensorRig:
     width, height, fovy = 480, 360, 70.
-    camera_position = np.array([.09, 0, .22])
-    # OpenCV optical frame (right, down, forward) -> robot body frame.
-    camera_rotation = np.array([[0, -.5, np.sqrt(.75)], [-1, 0, 0], [0, -np.sqrt(.75), -.5]])
 
     def __init__(self, model, seed=0, noise=True, camera_profile=None):
         camera=model.camera('nav_camera').id
         self.fovy=float(model.cam_fovy[camera])
-        self.camera_position=model.cam_pos[camera].copy()
-        q=model.cam_quat[camera]
-        self.camera_rotation=Rotation.from_quat(np.r_[q[1:],q[0]]).as_matrix()@np.diag([1,-1,-1])
+        # Forward kinematics at the held joint reference only. The sensor
+        # calibration never reads the running robot's world pose.
+        reference = mujoco.MjData(model)
+        mujoco.mj_forward(model, reference)
+        base = model.body('base_link').id
+        body_from_world = reference.xmat[base].reshape(3, 3).T
+        self.camera_position = body_from_world @ (reference.cam_xpos[camera] - reference.xpos[base])
+        self.camera_rotation = body_from_world @ reference.cam_xmat[camera].reshape(3, 3) @ np.diag([1,-1,-1])
         self.intrinsics = None
         self.fps = 1/.06
         self.capture_width, self.capture_height = self.width, self.height
+        if camera_profile is None and np.all(model.cam_sensorsize[camera] > 0):
+            camera_profile = json.loads(Path(__file__).with_name('d435i_camera.json').read_text())
         if camera_profile is not None:
             self.capture_width = int(camera_profile['width'])
             self.capture_height = int(camera_profile['height'])
@@ -54,6 +59,14 @@ class SensorRig:
             self.intrinsics = (camera_profile['fx']*scale, camera_profile['fy']*scale,
                                (camera_profile['cx']+.5)*scale-.5,
                                (camera_profile['cy']+.5)*scale-.5)
+        self.rectify_maps = None
+        if camera_profile and camera_profile.get('rectify'):
+            def matrix(fx, fy, cx, cy):
+                return np.array([[fx, 0., cx], [0., fy, cy], [0., 0., 1.]])
+            source = matrix(*(camera_profile[k] for k in ('fx', 'fy', 'cx', 'cy')))
+            self.rectify_maps = cv2.initUndistortRectifyMap(source, np.asarray(camera_profile['coefficients']),
+                None, matrix(*self.intrinsics), (self.width, self.height), cv2.CV_32FC1)
+            self.depth_unit = camera_profile['depth_scale_m']
         self.renderer = mujoco.Renderer(model, height=self.capture_height, width=self.capture_width)
         self.joint_ids = [model.joint(n).qposadr[0] for n in JOINTS]
         self.rng = np.random.default_rng(seed)
@@ -79,7 +92,11 @@ class SensorRig:
         self.renderer.disable_depth_rendering()
         if self.noise:
             depth += self.rng.normal(0, .0007, depth.shape)
-        if (self.width, self.height) != (self.capture_width, self.capture_height):
+        if self.rectify_maps is not None:
+            depth = np.rint(depth / self.depth_unit) * self.depth_unit
+            rgb = cv2.remap(rgb, *self.rectify_maps, cv2.INTER_LINEAR)
+            depth = cv2.remap(depth, *self.rectify_maps, cv2.INTER_NEAREST)
+        elif (self.width, self.height) != (self.capture_width, self.capture_height):
             rgb = cv2.resize(rgb, (self.width, self.height), interpolation=cv2.INTER_AREA)
             depth = cv2.resize(depth, (self.width, self.height), interpolation=cv2.INTER_NEAREST)
         depth[(depth < .15) | (depth > 4.)] = np.nan
@@ -90,7 +107,7 @@ class SensorRig:
 
 
 class KinematicOdometry:
-    """Leg encoder + attitude odometry with a lowest-foot contact estimate.
+    """Historical Mini baseline: leg encoders, attitude and a lowest-foot contact estimate.
 
 This owns a separate robot-only FK model whose root translation is always zero.
 Neither simulator contacts nor simulated root position/velocity enter it.

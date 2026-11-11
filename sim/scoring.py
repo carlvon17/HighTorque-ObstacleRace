@@ -1,4 +1,6 @@
 """Explicit simulation scoring assumptions; not an official referee model."""
+from itertools import product
+
 import numpy as np
 import mujoco
 from scipy.spatial import ConvexHull
@@ -13,12 +15,29 @@ class Referee:
         self.lane = Polygon(track.outer).difference(Polygon(track.inner))
         self.feet = []
         self.foot_bodies = {m.body(f"{side}_ankle_roll_link").id for side in ("l", "r")}
-        for g in range(m.ngeom):
-            if m.geom_bodyid[g] in self.foot_bodies and m.geom_contype[g]:
-                mesh = m.geom_dataid[g]
-                vertices = m.mesh_vert[m.mesh_vertadr[mesh]:m.mesh_vertadr[mesh]+m.mesh_vertnum[mesh]].copy()
-                vertices = vertices[ConvexHull(vertices).vertices]
-                self.feet.append((g, vertices))
+        # The Pro soles have a box and four horizontal capsules per foot.
+        # Sample each capsule's exact projected segment with a 64-sided disk
+        # (under 0.013 mm radial error); legacy soles use their convex mesh.
+        angle = np.arange(64)*2*np.pi/64
+        disk = np.column_stack((np.cos(angle), np.sin(angle)))
+        for body in sorted(self.foot_bodies):
+            pieces = []
+            for g in np.flatnonzero((m.geom_bodyid == body) & (m.geom_contype != 0)):
+                size = m.geom_size[g]
+                offsets = None
+                if m.geom_type[g] == mujoco.mjtGeom.mjGEOM_CAPSULE:
+                    vertices = np.array([[0,0,-size[1]], [0,0,size[1]]])
+                    offsets = size[0]*disk
+                elif m.geom_type[g] == mujoco.mjtGeom.mjGEOM_BOX:
+                    vertices = np.array(list(product((-1, 1), repeat=3)))*size
+                elif m.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH:
+                    mesh = m.geom_dataid[g]
+                    vertices = m.mesh_vert[m.mesh_vertadr[mesh]:m.mesh_vertadr[mesh]+m.mesh_vertnum[mesh]]
+                    vertices = vertices[ConvexHull(vertices).vertices]
+                else:
+                    raise ValueError(f'Unsupported sole contact shape: {m.geom_type[g]}')
+                pieces.append((g, vertices, offsets))
+            self.feet.append(pieces)
         self.obstacles = {g for g in range(m.ngeom) if (mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_GEOM, g) or '').startswith('hb_obstacle_geom_')}
         self.ground = m.geom("hb_carpet_collision").id
         self.reason = None
@@ -53,10 +72,16 @@ class Referee:
         d = self.robot.data
         polygons = []
         all_vertices = []
-        for g, vertices in self.feet:
-            world = vertices @ d.geom_xmat[g].reshape(3, 3).T + d.geom_xpos[g]
-            polygons.append(Polygon(world[ConvexHull(world[:, :2]).vertices, :2]))
-            all_vertices.append(world)
+        for pieces in self.feet:
+            points = []
+            for g, vertices, offsets in pieces:
+                xy = (vertices @ d.geom_xmat[g].reshape(3, 3).T + d.geom_xpos[g])[:, :2]
+                if offsets is not None:
+                    xy = (xy[:, None, :] + offsets).reshape(-1, 2)
+                points.append(xy)
+            points = np.vstack(points)
+            polygons.append(Polygon(points[ConvexHull(points).vertices]))
+            all_vertices.append(points)
         yaw = self.robot.pose[2]
         lateral = np.vstack(all_vertices)[:, :2] @ np.array([-np.sin(yaw), np.cos(yaw)])
         self.max_foot_width = max(self.max_foot_width, float(np.ptp(lateral)))

@@ -48,7 +48,8 @@ CASES = [
     FaultCase('imu_pause_0_6s', 'imu', .6),
     FaultCase('camera_pause_0_6s_box_still_occluded', 'camera', .6, True),
     FaultCase('camera_pause_0_6s_5cm_coast_box_occluded', 'camera', .6, True, .05),
-    FaultCase('camera_pause_0_6s_10cm_coast_box_occluded', 'camera', .6, True, .10,
+    FaultCase('camera_pause_0_6s_10cm_coast_box_occluded', 'camera', .6, True, .10),
+    FaultCase('camera_pause_0_6s_20cm_coast_box_occluded', 'camera', .6, True, .20,
               expect_recovery=False),
     FaultCase('camera_pause_0_6s_textureless_box_occluded', 'camera', .6, True,
               texture_scale=0., expect_recovery=False),
@@ -207,6 +208,14 @@ class SensorRecoveryTests(unittest.TestCase):
                 else:
                     self.assertIsNone(value['resume_delay_s'])
 
+    def test_occluded_recovery_uses_floor_map_and_retains_box(self):
+        rows = self.results['camera_pause_0_6s_10cm_coast_box_occluded']['observations']
+        recovered = next(row for row in rows if row['method'] == 'floor_keyframe')
+        self.assertLess(recovered['pose_error_m'], .003)
+        self.assertEqual(recovered['good_frames'], 1)
+        self.assertEqual(len(recovered['boxes']), 1)
+        self.assertFalse(np.any(recovered['command']))
+
     def test_unusable_rgb_stops_even_when_box_depth_supports_motion(self):
         for name in ('rgb_black_0_6s_two_box_faces', 'rgb_saturated_0_4s_two_box_faces'):
             value = self.results[name]
@@ -257,7 +266,7 @@ if __name__ == '__main__':
         summary = dict(navigation_core_sha256=core_hashes(),
             metric_pose_tolerance_m=.02,
             input='analytic perspective RGB-D with measured attitude, no mocked tracking',
-            motion_model='prescribed sensor trajectory, normally held during interruption; one case coasts 5 cm',
+            motion_model='prescribed sensor trajectory, normally held during interruption; cases include 5, 10 and 20 cm of additional coasting',
             cases=[value['summary'] for value in SensorRecoveryTests.results.values()])
         (args.output / 'sensor_recovery_summary.json').write_text(json.dumps(summary, indent=2))
     raise SystemExit(0 if result.wasSuccessful() else 1)

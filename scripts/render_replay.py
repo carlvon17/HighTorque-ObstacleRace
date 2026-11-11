@@ -10,6 +10,7 @@ import imageio.v2 as imageio
 import mujoco
 import numpy as np
 from PIL import Image, ImageDraw
+from sim.field import FIELD_DIRS
 from sim.navigation import Track
 
 
@@ -28,11 +29,12 @@ def main():
     model = mujoco.MjModel.from_xml_path(str((run / "scene.xml").resolve()))
     data = mujoco.MjData(model)
     summary = json.loads((run / "summary.json").read_text())
-    track = Track()
+    bend_profile = summary.get("bend_profile", "smooth")
+    track = Track(bend_profile)
     trace = np.loadtxt(run / "telemetry.csv", delimiter=",", skiprows=1)
     path = np.loadtxt(run / "planned_path.csv", delimiter=",")
     # Plan/actual trajectory plot uses the same metric carpet projection.
-    canvas = Image.open(ROOT / "output/athletics/mujoco/assets/carpet.png").resize((1040, 640))
+    canvas = Image.open(FIELD_DIRS[bend_profile] / "mujoco/assets/carpet.png").resize((1040, 640))
     draw = ImageDraw.Draw(canvas)
     c = track.config
     low = np.array(c["carpet_center"])-np.array(c["carpet_dimensions"][:2])/2

@@ -8,6 +8,8 @@ from pathlib import Path
 import numpy as np
 from scipy.spatial import cKDTree
 
+from sim.field import DEFAULT_BEND, FIELD_DIRS
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -16,9 +18,12 @@ def wrap(angle):
 
 
 class Track:
-    def __init__(self):
+    def __init__(self, bend_profile=DEFAULT_BEND):
         self.config = json.loads((ROOT / "scene_config.json").read_text())
-        geometry = json.loads((ROOT / "output/athletics/geometry.json").read_text())
+        field_geometry = FIELD_DIRS[bend_profile] / "geometry.json"
+        if not field_geometry.is_file():
+            raise FileNotFoundError(f"Missing {field_geometry}. Run scripts/generate_field.py --bend-profile {bend_profile}")
+        geometry = json.loads(field_geometry.read_text())
         self.inner, self.outer = (np.array(geometry[key]) for key in ("inner", "outer"))
         source = np.array(geometry["center"])[::-1]
         source = np.vstack([source, source[:1]])

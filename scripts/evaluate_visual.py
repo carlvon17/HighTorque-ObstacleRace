@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 import numpy as np
 from PIL import Image, ImageDraw
+from shapely.geometry import LineString, Point
 from sim.navigation import Track
 
 
@@ -16,7 +17,7 @@ def evaluate(run):
     data = np.genfromtxt(run / 'telemetry.csv', delimiter=',', names=True)
     states = np.load(run / 'states.npz')
     xy = np.column_stack([data['truth_x'], data['truth_y']])
-    track = Track()
+    track = Track(summary.get("bend_profile", "smooth"))
     start = next(item for item in track.config['starts'] if item['id'] == summary['start'])
     heading = np.deg2rad(start['yaw_degrees'])
     normal = np.array([np.cos(heading), np.sin(heading)])
@@ -27,6 +28,7 @@ def evaluate(run):
     finish = summary['finish_time_s']
     result = {
         'status': summary['status'],
+        'bend_profile': summary.get('bend_profile', 'smooth'),
         'finish_time_s': finish,
         'full_lap_progress_ratio': float(data['eval_progress'][-1] / summary['track_length_evaluation_only_m']),
         'minimum_recorded_base_height_m': float(states['qpos'][:, 2].min()),
@@ -34,6 +36,12 @@ def evaluate(run):
         'event_detail': summary['event_detail'],
         'referee_note': f"Contacts checked during original run at {summary.get('locomotion', {}).get('pd_hz', 500):g} Hz; foot overlap at 50 Hz. Partial foot overhang is allowed.",
     }
+    centerline = LineString(np.vstack([track.center, track.center[0]]))
+    driven = (data['t'] >= 2.) & (data['t'] <= (finish if finish is not None else data['t'][-1]))
+    if driven.any():
+        offsets = np.array([centerline.distance(Point(point)) for point in xy[driven]])
+        result['base_centerline_distance_p95_m'] = float(np.percentile(offsets, 95))
+        result['base_centerline_distance_max_m'] = float(offsets.max())
     if finish is not None:
         index = np.searchsorted(data['t'], finish)
         result['finish_trigger_normal_offset_m'] = float(signed_distance[index])
@@ -67,7 +75,9 @@ def evaluate(run):
         q = (np.asarray(p) - low) * scale
         return float(q[0]), float(640 - q[1])
 
-    for obstacle in c['obstacles']:
+    manifest_path = run/'run_manifest.json'
+    arguments = json.loads(manifest_path.read_text())['arguments'] if manifest_path.exists() else {}
+    for obstacle in ([] if arguments.get('no_obstacles') else c['obstacles']):
         x, y = obstacle['position']
         x += summary['obstacle_shift_world_only_m']
         draw.rectangle([pixel([x-.1, y+.1]), pixel([x+.1, y-.1])], fill=tuple(obstacle['rgb']))

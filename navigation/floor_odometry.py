@@ -17,23 +17,63 @@ class FloorOdometry:
         self.resolution = .002
         self.x, self.y = np.meshgrid(np.arange(.45, .85, self.resolution),
                                      np.arange(-.10, .10, self.resolution), indexing='ij')
+        self.window_selected = False
         self.support = 0
         self.reason = 'initializing'
         self.quality = {}
 
-    def project(self, gray, depth, attitude, plane, heading):
-        if plane is None or not plane.valid:
-            return None
+    def _optical_points(self, forward, left, attitude, plane, heading):
         cosine, sine = np.cos(heading), np.sin(heading)
-        x = cosine * self.x - sine * self.y
-        y = sine * self.x + cosine * self.y
+        x = cosine * forward - sine * left
+        y = sine * forward + cosine * left
         z = -(plane.normal[0] * x + plane.normal[1] * y + plane.offset) / plane.normal[2]
         level = np.stack([x, y, z], axis=-1)
-        optical = (level @ attitude - self.position) @ self.rotation
+        return (level @ attitude - self.position) @ self.rotation
+
+    def select_window(self, depth, attitude, plane):
+        """Choose one metric grid for all frame pairs and the entire atlas."""
+        if self.window_selected or not plane.valid:
+            return
+        self.window_selected = True
+        height, width = depth.shape
+        fx, fy, cx, cy = self.intrinsics
+        heading = np.arctan2(attitude[1, 0], attitude[0, 0])
+        forward = self.x[[0, 0, -1, -1], [0, -1, 0, -1]]
+        left = self.y[[0, 0, -1, -1], [0, -1, 0, -1]]
+        # The torso can straighten after the first usable frame. Prefer a
+        # footprint that clears all four image borders in both attitudes.
+        cosine, sine = np.cos(heading), np.sin(heading)
+        upright = np.array([[cosine, -sine, 0.], [sine, cosine, 0.], [0., 0., 1.]])
+
+        def fits_image(shift, orientation):
+            optical = self._optical_points(forward + shift, left, orientation, plane, heading)
+            if np.min(optical[:, 2]) <= .15:
+                return False
+            u, v = (optical[:, :2] / optical[:, 2, None]).T
+            u, v = fx*u + cx, fy*v + cy
+            return (u.min() >= .05*width and u.max() < .95*width and
+                    v.min() >= .05*height and v.max() < .95*height)
+
+        candidates = [shift for shift in np.arange(0., .321, .02) if fits_image(shift, attitude)]
+        # Stable sorting preserves nearest-first order within each group.
+        candidates.sort(key=lambda shift: not fits_image(shift, upright))
+        for shift in candidates:
+            if self._sampling_coordinates(depth, attitude, plane, heading, self.x + shift) is not None:
+                self.x += shift
+                return
+        if candidates:
+            # The first view may be occluded. Keep the same registration grid
+            # for later frames, which still require measured floor depth.
+            self.x += candidates[0]
+
+    def _sampling_coordinates(self, depth, attitude, plane, heading, forward):
+        if plane is None or not plane.valid:
+            return None
+        optical = self._optical_points(forward, self.y, attitude, plane, heading)
         fx, fy, cx, cy = self.intrinsics
         map_x = np.asarray(fx * optical[..., 0] / optical[..., 2] + cx, np.float32)
         map_y = np.asarray(fy * optical[..., 1] / optical[..., 2] + cy, np.float32)
-        height, width = gray.shape
+        height, width = depth.shape
         # No padded or extrapolated image pixel contributes to the measurement.
         inside = ((optical[..., 2] > .15) & (map_x >= 1.) & (map_x < width - 2.) &
                   (map_y >= 1.) & (map_y < height - 2.))
@@ -58,7 +98,13 @@ class FloorOdometry:
                         (expected_depth > .15) & (abs(measured_depth - expected_depth) < .015))
             if not on_floor.all():
                 return None
-        image = cv2.remap(gray.astype(np.float32), map_x, map_y,
+        return map_x, map_y
+
+    def project(self, gray, depth, attitude, plane, heading):
+        maps = self._sampling_coordinates(depth, attitude, plane, heading, self.x)
+        if maps is None:
+            return None
+        image = cv2.remap(gray.astype(np.float32), *maps,
                           cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT)
         texture = image - cv2.GaussianBlur(image, (0, 0), 2.)
         # White-line edges have high contrast but leave motion along the line

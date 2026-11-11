@@ -1,0 +1,239 @@
+diff --git a/deploy/box_panel.py b/deploy/box_panel.py
+index 6249ab0..87e1da0 100644
+--- a/deploy/box_panel.py
++++ b/deploy/box_panel.py
+@@ -71,8 +71,14 @@ class BoxPanel:
+             self.key=secrets.token_bytes(32)
+         self.token=signed(self.key,'panel/'+self.session)
+         self.defaults=asdict(BoxTuning())
+-        self.values=self.defaults.copy()
+-        self.revision=0
++        try:
++            request=json.loads((self.vision/'box-request.json').read_text())
++        except FileNotFoundError:
++            self.values=self.defaults.copy()
++            self.revision=0
++        else:
++            self.values=asdict(BoxTuning.read(request['values']))
++            self.revision=request['revision']
+         self.lock=Lock()
+         self.html=Path(__file__).with_name('box_panel.html').read_bytes()
+         self.server=ThreadingHTTPServer((host,port),PanelHandler)
+diff --git a/deploy/navigation_cli.py b/deploy/navigation_cli.py
+index 2e889bc..faf8954 100644
+--- a/deploy/navigation_cli.py
++++ b/deploy/navigation_cli.py
+@@ -1,5 +1,6 @@
+ """On-robot terminal commands for saved head pose and one full navigation lap."""
+ import argparse
++from dataclasses import asdict
+ from datetime import datetime, timezone
+ import fcntl
+ import json
+@@ -14,6 +15,8 @@ import uuid
+ 
+ ROOT = Path(__file__).resolve().parents[1]
+ sys.path.insert(0, str(ROOT))
++from navigation.box_tuning import BoxTuning, FIELDS
++
+ CONTROL_LOCK = Path('/tmp/competition_navigation_control.lock')
+ CLI_LOCK = Path('/tmp/competition_navigation_cli.lock')
+ REASON_TEXT = {
+@@ -270,8 +273,15 @@ def restore_head(root, folder, state_path, reference):
+         return dict(record, status='head_ready', report=report)
+ 
+ 
+-def start_lap(root, folder, state_path, config, speed):
++def start_lap(root, folder, state_path, config, speed, box_tuning=None):
+     output = folder/'navigation'
++    if box_tuning is not None:
++        # Seed this lap's mailbox before launching either the panel or the worker.
++        # Exclusive directory creation prevents a retry from replacing live edits.
++        output.mkdir()
++        vision = output/'vision'
++        vision.mkdir()
++        write_json(vision/'box-request.json', dict(revision=1, values=asdict(box_tuning)))
+     command = [sys.executable, str(root/'deploy/launch_line_trial.py'),
+                '--shared-navigation', '--execute', '--duration', '300',
+                '--speed', str(speed), '--config', str(config), '--output', str(output)]
+@@ -284,6 +294,8 @@ def start_lap(root, folder, state_path, config, speed):
+         raise RuntimeError('未取得整圈任务启动记录 '+result.stdout)
+     record = dict(kind='lap', pid=launch['pid'], script=str(root/'deploy/line_trial.py'),
+                   output=str(output), log=str(output/'mission.log'), maximum_duration_s=300)
++    if box_tuning is not None:
++        record['box_start_values'] = asdict(box_tuning)
+     try:
+         write_json(state_path, record)
+     except OSError:
+@@ -298,7 +310,22 @@ def main(argv=None):
+     parser.add_argument('--config', type=Path,
+                         default=Path(os.environ.get('NAV_CALIBRATION_FILE', str(ROOT/'deploy/pro_model_config.json'))))
+     parser.add_argument('--speed', type=float, default=.22)
++    group = parser.add_argument_group('本趟箱区参数（仅 start）')
++    defaults = asdict(BoxTuning())
++    for key, label, unit, low, high, step in FIELDS:
++        flag = '--box-' + key.replace('_', '-')
++        group.add_argument(flag, dest=key, type=float, metavar='N',
++                           help=f'{label}，单位 {unit}，范围 {low:g}–{high:g}，步进 {step:g}，默认 {defaults[key]:g}')
+     args = parser.parse_args(argv)
++    overrides = {key: getattr(args, key) for key in defaults if getattr(args, key) is not None}
++    box_tuning = None
++    if overrides:
++        if args.action != 'start':
++            parser.error('箱区参数仅适用于 nav start')
++        try:
++            box_tuning = BoxTuning.read({**defaults, **overrides})
++        except ValueError as exc:
++            parser.error(str(exc))
+     if not math.isfinite(args.speed) or not 0 < args.speed <= .4:
+         parser.error('speed must be within (0, 0.4] m/s')
+     base = ROOT/'runs/terminal'
+@@ -329,7 +356,7 @@ def main(argv=None):
+                     if args.action == 'head':
+                         result = restore_head(ROOT, folder, state_path, reference)
+                     else:
+-                        result = start_lap(ROOT, folder, state_path, args.config.resolve(), args.speed)
++                        result = start_lap(ROOT, folder, state_path, args.config.resolve(), args.speed, box_tuning)
+         if args.action=='start':
+             result['release'] = ROOT.name
+             result['stop_command'] = str(ROOT/'deploy/nav')+' stop'
+diff --git a/deploy/shared_navigation.py b/deploy/shared_navigation.py
+index 2acee2e..a73b2ae 100644
+--- a/deploy/shared_navigation.py
++++ b/deploy/shared_navigation.py
+@@ -231,6 +231,8 @@ def run(args, publish=False):
+                 float(config.get('observation_lease_s', .35)))
+             from deploy.box_panel import VisionMailbox
+             mailbox=VisionMailbox(out) if publish else None
++            if mailbox is not None:
++                mailbox.update(runtime.crates, time.monotonic())
+             if hasattr(runtime, 'publish_velocity') and not hasattr(runtime, 'freeze_publish_velocity'):
+                 raise ValueError('A 50 Hz box controller must implement freeze_publish_velocity()')
+             if hasattr(runtime, 'update_legs'):
+diff --git a/release_manifest.json b/release_manifest.json
+index a8ab524..9141229 100644
+--- a/release_manifest.json
++++ b/release_manifest.json
+@@ -64,7 +64,7 @@
+     "deploy/README.md": "07a2d6fc746c138c021d457be8bdab0a16b442ff421fe586f7634dbf544feb4e",
+     "deploy/SHARED_NAVIGATION.md": "3fb98446345e044783de6bffecd8227d1d495da6c163048d1618610c7e1961e3",
+     "deploy/box_panel.html": "4bc92bb51e9172e342d1882dd07f94bfa0fe3dc73b0f7f583f76ccde7bff4449",
+-    "deploy/box_panel.py": "2b96ab5261f8f32c3a232f940255a1060363c4a2c6d3b4917f368e6e1d7defe0",
++    "deploy/box_panel.py": "ac9b62ff0bce3b9b170822f3eeb1bd166fba1bdda9812fad00c73dedbbada0bd",
+     "deploy/calibrate_ground.py": "e62583349e2e80a65a542e7c9947ac1c830b92c35ad732ff70f35c7830937044",
+     "deploy/controller_state.py": "cc983b2a73b8c284727de32191e8d0fdba346af9139fce4967e6c2fbac045856",
+     "deploy/geometry.py": "b578465da6e7b851247a7a4fee32f4ba147ef848c1f6b402538d0d7107f4586c",
+@@ -77,7 +77,7 @@
+     "deploy/line_trial.py": "e15784b100c27b8ea058f207ab8ab9c02abfb5ebac0a21ba28a1c84cff8590f7",
+     "deploy/nav": "0642af455503366fdb684ed0300e316ac86fa3c425fc8064ec425f7097fa2a15",
+     "deploy/navigation_buttons.py": "d103b1133b810ccee63e3df261754162cb038952e74c51c6f73e06df07c17a79",
+-    "deploy/navigation_cli.py": "6739f1ee3efda6fa7c602ccfa01ab778c6286cdd6a32d5e2a0882690e8c88757",
++    "deploy/navigation_cli.py": "4acbcda8bdc280d3232a2f1f9c3284b597f0793f3cd6ed2e36920cda3022a680",
+     "deploy/preview_camera.py": "b4c7f0a4fc1c0ff53b969ef3f9a463b4b1c830852ce264cc6665faa14aaf3f02",
+     "deploy/pro_config.json": "14994d6824caf2a406e4190479de2f52fe13cbcda119a9e3f0ebc55768385623",
+     "deploy/pro_head_model.py": "6199d9cf46fcba12ef84018e1d4f28ee767f28ec0c668731b146b988e6fdafe6",
+@@ -89,7 +89,7 @@
+     "deploy/run_navigation_buttons.sh": "8327022110a897d02ad6364c6be352cbbf94d0624ef2300f3a98fb58faae5b64",
+     "deploy/run_shadow.sh": "cf3ae734c5a44d2e6f6560f9db682f5d19a0ed63c0416c86976492019b4f6fd9",
+     "deploy/shadow.py": "e4dd5d1ee718cded07baa9f5fc62a7244fc1a5f94a8046ab14e2b1585e05e58b",
+-    "deploy/shared_navigation.py": "9deb74a5746dba72da393ba7bc257935994e4a54fec440b84a387c44e2602c9c",
++    "deploy/shared_navigation.py": "6553a863872cb789bea36c752155d971643043e7c2923fc7a0dc899495f0e0b6",
+     "deploy/stop_archive.py": "a998f12c45fe5a68796202cb34b7de540bc2d0858d0bd8416c3ff2d4308b8cde",
+     "deploy/task_head_pose.json": "fe2f430b11a1bed540fb046415886082213fe231342ebd05f62a6910c44bbc6f",
+     "navigation/__init__.py": "5116b22a589575c6b9f55158ece82507574c441351a8d7e32ca1d964f8107380",
+@@ -135,6 +135,7 @@
+     "scripts/test_rt11_box_publication.py": "1491f6bc1cdaea480108477219e4bf0652bd438daac2ab40e14c44387098eec9",
+     "scripts/test_rt11_box_steps.py": "5e7aaa3d394dc81e96943779cff198b00087faaa08b6668018af02f899a9898c",
+     "scripts/test_rt11_box_visibility.py": "9dc84b8303c08f56c6fda0ccd91ade51ff56e45093de847aca57d007a9dbb318",
++    "scripts/test_rt11_cli_tuning.py": "73cd651fada667a93ed21de56db6d663baaf948fd508ba1d69c01cd3405ec18b",
+     "scripts/test_sensor_recovery.py": "1405a42934f58e841d0cbe4dfc48e162519bf3f31b9357b801211bc3dd5e022f",
+     "scripts/test_shared_navigation.py": "d92209f27b25d35d5987292a8d8606db5b28eeeafef237a8f252793589901444",
+     "scripts/test_single_boundary.py": "ad15b9263030f9115a2d5a212aa64f706c535daa56bc5f7765b5b5a7ead00214",
+@@ -151,6 +152,6 @@
+   "real_motion_requires": "verified camera/IMU calibration, current sensors, immutable AMP identity, sole guarded publisher",
+   "nostop_policy": "Mission duration inherited from rt10; local manoeuvres may request zero velocity.",
+   "parent_release_id": "shared_nav_20261111_rt11",
+-  "parent_manifest_sha256": "f2aa243f8e2c486dacf119465ef2f21a5a368388c8884dc59fb9edb67552298d",
+-  "validation_scope": "Static RT11 controller, HTTP, and two-browser checks. No simulation or robot motion for this update."
++  "parent_manifest_sha256": "8d57f522e7e3014340fa6435f1ca61baac10f4e956af91004d665f58037fbf37",
++  "validation_scope": "RT11 CLI startup, controller and panel regression tests without robot motion or simulation."
+ }
+diff --git a/scripts/test_rt11_cli_tuning.py b/scripts/test_rt11_cli_tuning.py
+new file mode 100644
+index 0000000..1486bb6
+--- /dev/null
++++ b/scripts/test_rt11_cli_tuning.py
+@@ -0,0 +1,73 @@
++"""Start options reach both consumers before the detached lap may move."""
++from contextlib import redirect_stderr, redirect_stdout
++from dataclasses import asdict
++import io
++import json
++from pathlib import Path
++import subprocess
++import sys
++import tempfile
++import unittest
++from unittest.mock import patch
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++from deploy import navigation_cli as cli
++from deploy.box_panel import BoxPanel, VisionMailbox
++from navigation.box_servo import BoxServo
++from navigation.box_tuning import BoxTuning
++
++
++class StartTuningTest(unittest.TestCase):
++    def test_start_reaches_panel_and_controller_then_allows_live_change(self):
++        with tempfile.TemporaryDirectory() as tmp:
++            root = Path(tmp)
++            (root/'deploy').mkdir()
++            pose = root/'deploy/task_head_pose.json'
++            pose.write_text(json.dumps({'measured_joint_reference_rad': {}}))
++            config = root/'deploy/pro_model_config.json'
++            config.write_text('{}')
++            expected = dict(asdict(BoxTuning()), side_step=3., forward_speed=21., first_gap=40.5)
++
++            def detached(command, **kwargs):
++                output = Path(command[command.index('--output')+1])
++                panel = BoxPanel(output, '127.0.0.1', 0, root/'no-key').start()
++                try:
++                    state = panel.state()
++                    self.assertEqual(state['defaults'], asdict(BoxTuning()))
++                    self.assertEqual((state['revision'], state['desired']), (1, expected))
++                    servo = BoxServo()
++                    mailbox = VisionMailbox(output/'vision')
++                    mailbox.update(servo, 0.)
++                    self.assertEqual(panel.state()['control']['applied'], expected)
++                    changed = dict(expected, side_step=3.5)
++                    self.assertEqual(panel.submit(dict(base=1, values=changed))[0], 200)
++                    mailbox.update(servo, 1.)
++                    self.assertEqual(servo.panel_status(1.)['applied'], changed)
++                    with self.assertRaises(FileExistsError):
++                        cli.start_lap(root, output.parent, output.parent/'unused', config, .22, BoxTuning())
++                    self.assertEqual(panel.state()['control']['applied'], changed)
++                finally:
++                    panel.close()
++                (output/'launch.json').write_text(json.dumps(dict(status='launched', pid=123)))
++                return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
++
++            with patch.object(cli, 'ROOT', root), patch.object(cli, 'CLI_LOCK', root/'cli.lock'), \
++                    patch('navigation.release.verify_release'), patch.object(cli, 'validate_start'), \
++                    patch.object(cli.subprocess, 'run', side_effect=detached), \
++                    patch.object(cli, 'follow_lap', return_value=0), redirect_stdout(io.StringIO()):
++                self.assertEqual(cli.main(['start', '--config', str(config), '--speed', '.22',
++                                           '--box-side-step', '3', '--box-forward-speed', '21',
++                                           '--box-first-gap', '40.5']), 0)
++            record = json.loads((root/'runs/terminal/latest.json').read_text())
++            self.assertEqual(record['box_start_values'], expected)
++
++    def test_invalid_options_stop_before_launch(self):
++        cases = [('start','--box-side-step','9.1'), ('start','--box-forward-step','nan'),
++                 ('start','--box-side-speed','20.5'), ('start','--box-forward-speed','19'),
++                 ('start','--box-first-gap','39.1'), ('stop','--box-side-step','3')]
++        for args in cases:
++            with self.subTest(args=args), patch.object(cli, 'start_lap') as start, \
++                    redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as refused:
++                cli.main(args)
++            self.assertEqual(refused.exception.code, 2)
++            start.assert_not_called()

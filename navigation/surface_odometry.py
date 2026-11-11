@@ -11,9 +11,12 @@ from navigation.ground import GroundEstimator
 
 class SurfaceOdometry:
     def __init__(self, rays, camera_position, camera_rotation):
-        self.rays=rays
+        self.rays=np.asarray(rays,dtype=np.float32)
         self.position=camera_position
         self.rotation=camera_rotation
+        # float32 copies keep the per-frame point cloud in single precision.
+        self.position32=np.asarray(camera_position,dtype=np.float32)
+        self.rotation32=np.asarray(camera_rotation,dtype=np.float32)
         self.support=0
         self.error=None
         self.ground=GroundEstimator()
@@ -21,15 +24,21 @@ class SurfaceOdometry:
     @staticmethod
     def sample(points):
         if not len(points):return np.empty((0,2),np.float32)
-        _,indices=np.unique(np.round(points/.008).astype(np.int32),axis=0,return_index=True)
+        # Pack the two quantized coordinates into one int64 key so the slow
+        # 2-D np.unique(axis=0) row sort becomes a 1-D unique. Each coordinate
+        # is shifted positive first, so negative values cannot collide, and
+        # |coordinate| < 10 m keeps the shifted value inside 32 bits.
+        q=np.round(points/.008).astype(np.int64)
+        key=((q[:,0]+1_000_000)<<32)|(q[:,1]+1_000_000)
+        _,indices=np.unique(key,return_index=True)
         points=points[indices]
         if len(points)>500:points=points[np.linspace(0,len(points)-1,500).astype(int)]
         return np.ascontiguousarray(points,dtype=np.float32)
 
     def project(self, frame, attitude):
         rgb,depth=frame.rgb,frame.depth
-        body=(self.rays*depth[...,None])@self.rotation.T+self.position
-        level=body@attitude.T
+        body=(self.rays*depth[...,None])@self.rotation32.T+self.position32
+        level=body@np.asarray(attitude,dtype=np.float32).T
         finite=np.isfinite(depth)&(depth>.15)&(depth<2.7)&(body[...,0]>.22)
         plane=self.ground.estimate(level,finite&(body[...,0]>.30),timestamp=frame.time)
         if not plane.valid:return [np.empty((0,2),np.float32)]*3

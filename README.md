@@ -1,21 +1,23 @@
 # 2026 华北五省：类人机器人田径赛场
 
-> 2026-11-11：当前仿真与机载入口已共用 `navigation/`，AMP 固定为真机 Pro 版本。
-> 当前代码、测试结果和边界以 [共享导航状态](SHARED_NAVIGATION_STATUS.md) 为准；下文旧策略成绩保留作历史记录。
+> 2026-11-11：默认视觉仿真使用真机 `rt1` 的导航逻辑、D435i 配置和实测视觉时序，AMP 固定为真机 Pro 版本。
+> 01 三箱复跑见 [rt1 时序与起步结果](SIMULATION.md#rt1-机载导航复跑)。此前的共享导航与建图结果见 [共享导航状态](SHARED_NAVIGATION_STATUS.md)。
 
-当前版本已从 01 起点以 **115.90 s** 完成红、黄、绿三箱场景，独立裁判未记录碰箱、出界或摔倒，
-并核验终点触发与停车 3 秒。[当前共享导航整圈回放](output/integration/corner_cases_20261111/full_lap_final/replay_1x_50fps.mp4)。
+`feat/visual-mapping` 在共享导航中加入 RGB-D 地面纹理关键帧地图，提供整圈地图位置与短时视觉失效后的位移重获。当前地图按 Pro 头部反馈和逐帧机身姿态投影。地图预览、定位误差和三箱赛道进度见 [Pro 任务头姿下的建图验证](SHARED_NAVIGATION_STATUS.md#pro-任务头姿下的建图验证)。
+
+首版已从 01 起点以 **115.90 s** 完成红、黄、绿三箱场景，独立裁判未记录碰箱、出界或摔倒，
+并核验终点触发与停车 3 秒。[旧 Mini 模型整圈回放](output/integration/corner_cases_20261111/full_lap_final/replay_1x_50fps.mp4)。
 单边线、弯道、遮挡、±30°起步和传感器中断的验证见 [边界场景测试](CORNER_CASES.md)。
 该结果来自仿真，尚未验证 Pro 真机部署与闭环表现。
 
 场地部分依据用户指定的规则第 28 页、图 2.1.1 搭建，只包含田径赛场。
 原始截图保存在 `reference/athletics_rule_page28.png`。障碍物布局和外观已根据用户补充的实景照片 `reference/athletics_site_photo.jpg` 修订。
 
-## Mini Pi Plus 导航＋行走仿真
+## Pi Plus Pro 导航和行走仿真
 
 已增加独立的 MuJoCo 机器人闭环。2026-11-10 起，默认基础运控已同步为真机 Pro 当前
 `amp.trt` 的同一组 FP32 权重和控制参数（配置标识 `pi_plus_amp_1110_policy_1.rknn`），
-机器人动力学与碰撞模型仍为原 Mini Pi Plus 模型，尚非经过标定的 Pro 模型。
+默认机器人采用随真机提供的 Pro 全身 MJCF，相机接在可动头部的 `camera_link`。站姿标定、当前赛道试验及复现命令见 [Pro 头部与相机](SIMULATION.md#pro-头部与相机)。
 同步内容、数值对照及运行边界见 [运控同步记录](SIMULATION.md#2026-11-10真机基础运控同步)。
 以下整圈视频和成绩使用同步前的 `model_40000.pt`，不能作为当前策略的整圈通过记录。
 原导航的默认 `0.22–0.25 m/s` 原始指令曾被真机速度滤波后的死区抑制；当前共享导航已包含原厂指令滤波和死区适配，真机运动响应仍需标定。
@@ -24,7 +26,7 @@
 关节反馈仍供固定 AMP 与机载监督器使用。下面所述旧版本实现见 [历史自主导航说明](VISUAL_NAVIGATION.md)。
 原宽视场配置（`--camera-profile legacy`）三个起点各完成一圈，包含一次箱体整体移动 10 cm 的测试，均未触发当前工程判罚。
 可查看 [自主导航整圈回放（1 倍速 / 50 fps）](output/sim/visual_final_v5_01/replay_1x_50fps.mp4)。
-当前默认已匹配 D435i 的视场、640×480 采集后降采样到 320×240、15 Hz；2026-11-10 的 01 起点测试在
+此前 D435i 配置以 15 Hz 采集 640×480 并缩小到 320×240。2026-11-10 的 01 起点测试在
 修复箱体中心估计和遮挡跟踪后，以 128.18 s 完赛并通过停车核验，见
 [测试记录](VISUAL_NAVIGATION.md#2026-11-10窄视场下的箱体中心与遮挡跟踪修复)；修复前 70.24% 进度处阻塞的记录仍保留。
 绕障允许单脚部分越线，按“双脚均离开跑道”判罚，不代表双脚始终完全在线内。
@@ -44,6 +46,7 @@
 
 ## 文件入口
 
+- MuJoCo 提供两个可独立选择的入弯版本。默认的 `corner` 按现场照片让两条直线各自以折角接上大圆弧，文件位于 `output/athletics_corner/`。`smooth` 保留原有的平滑过渡，文件位于 `output/athletics/`。视觉仿真和真值仿真均可用 `--bend-profile corner` 或 `--bend-profile smooth` 切换。[GUI 启动示例](SIMULATION.md#rt1-机载导航复跑)
 - `output/athletics/athletics.blend`：可编辑 Blender 场景，单位米，Z 轴向上；白线、障碍物、起点分集合。
 - `output/athletics/overview.png`：三维预览。
 - `output/athletics/obstacle_detail.png`：照片修订后的木箱障碍区特写。
@@ -70,7 +73,7 @@
 | 起点 | 3 个，逆时针出发 | 规则与示意图 |
 | 地毯范围 | 10.40 × 6.40 m | 给跑道外围留边的建模取值 |
 
-**周长差异：** 图中未给出大小圆之间过渡曲线的尺寸。保留 1 m、2 m 半径和 5 m 中心距，并用切线连续的三次贝塞尔曲线连接后，内边线周长为 **19.9927 m**，车道中心周长为 **21.5635 m**。规则文字写的是内圈 19 m；本版本未将场地整体缩小，也没有声称已精确满足 19 m。若后续以 19 m 为验收条件，需要重新确认实际尺寸或调整中心距/过渡区。
+两版都使用 1 m、2 m 的内边线半径和 5 m 圆心距。平滑版以三次贝塞尔曲线接入大圆弧，内边线周长 **19.9927 m**，车道中心周长 **21.5635 m**。折角版把直线延伸至各自与大圆的交点，内边线周长 **20.1494 m**，车道中心周长 **21.6718 m**。现场照片提供折角形状，具体角度和两侧对称性采用几何推算。规则文字给出的内圈为 19 m，两版与该数值均有差距。
 
 0.50 m 按边线中心间距理解，扣除两侧半条 8 mm 胶带后，可见净宽为 0.492 m。没有采用群聊中的加宽建议。
 
@@ -143,6 +146,7 @@ uv pip install --python .venv/bin/python -r requirements.txt
 .venv/bin/python scripts/generate_field.py
 /Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup --python scripts/build_blender.py
 .venv/bin/python scripts/validate_scene.py
+.venv/bin/python scripts/validate_scene.py --bend-profile smooth
 ```
 
 `scene_config.json` 保存几何及位置参数，两个生成器共用同一份数据。调整关键尺寸后也应同步核对 Blender 脚本中的展示标注。直接编辑 `.blend` 不会自动回写 MJCF，需在配置中同步修改并重新生成。

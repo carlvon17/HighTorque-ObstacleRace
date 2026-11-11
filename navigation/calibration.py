@@ -1,12 +1,13 @@
-"""Explicit calibration readiness; placeholder transforms never enable motion."""
+"""Accept measured geometry or an explicitly selected robot-model assumption."""
 import numpy as np
 
 
 def calibration_reasons(config, head=None):
     reasons = []
-    for flag in ('extrinsics_verified', 'imu_alignment_verified'):
-        if config.get(flag) is not True:
-            reasons.append(flag+'_required')
+    if config.get('calibration_basis') != 'robot_model_assumption':
+        for flag in ('extrinsics_verified', 'imu_alignment_verified'):
+            if config.get(flag) is not True:
+                reasons.append(flag+'_required')
     if not config.get('calibration_evidence'):
         reasons.append('calibration_evidence_required')
     try:

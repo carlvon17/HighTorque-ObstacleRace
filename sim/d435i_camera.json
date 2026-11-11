@@ -9,5 +9,5 @@
   "cy": 245.226,
   "fps": 15,
   "processing_scale": 0.5,
-  "note": "RGB and color-aligned depth intrinsics. Mount position and 45-degree downward angle remain simulation assumptions."
+  "note": "RGB and color-aligned depth intrinsics. Pro mount and standby ground-plane fit are recorded in pro_camera_mount.json."
 }

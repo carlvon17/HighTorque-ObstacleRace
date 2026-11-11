@@ -17,8 +17,7 @@ import time
 import cv2
 import numpy as np
 import rospy
-from sensor_msgs.msg import Imu
-from livelybot_serial.msg import MotorState
+from sensor_msgs.msg import Imu, JointState
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -46,24 +45,32 @@ class Frame:
     time: float
     rgb: np.ndarray
     depth: np.ndarray
+    # Host monotonic time at which the packet was fully read. Kept last with a
+    # default so existing Frame(time, rgb, depth) construction stays valid;
+    # capture_worker always passes the real read-completion time explicitly.
+    received: float = 0.0
 
 
 class Sensors:
+    """Live factory state for the perception loop.
+
+    The per-motor MotorState topics publish at roughly 700 Hz each, about 15k
+    messages per second for the 22 joints. That is more Python callback work
+    than one core can absorb, and it starved this process's main thread: the
+    same perception frame measured 34 ms alone but ~1 s while those
+    subscriptions were active. The controller republishes the identical 22
+    joints at 18 Hz on /sim2real_master_node/rbt_state, which the guard and the
+    terminal preflight already read, so one JointState subscription replaces
+    the 22 topics.
+    """
     def __init__(self):
         self.lock = threading.Lock()
         self.imu = deque(maxlen=500)
         self.joints = {}
-        self.head = {}
-        self.subs = [rospy.Subscriber('/imu/data', Imu, self.on_imu, queue_size=20)]
-        for side in ('l', 'r'):
-            for name in ('hip_pitch','hip_roll','thigh','calf','ankle_pitch','ankle_roll',
-                         'shoulder_pitch','shoulder_roll','upper_arm','elbow'):
-                joint = side+'_'+name+'_joint'
-                self.subs.append(rospy.Subscriber('/livelybot_real_real/'+joint+'_controller/state',
-                    MotorState, self.on_joint, callback_args=joint, queue_size=1))
-        for joint in ('head_pitch_joint','head_yaw_joint'):
-            self.subs.append(rospy.Subscriber('/livelybot_real_real/'+joint+'_controller/state',
-                MotorState,self.on_head,callback_args=joint,queue_size=1))
+        self.head = {name: deque(maxlen=200) for name in ('head_pitch_joint', 'head_yaw_joint')}
+        self.subs = [
+            rospy.Subscriber('/imu/data', Imu, self.on_imu, queue_size=20),
+            rospy.Subscriber('/sim2real_master_node/rbt_state', JointState, self.on_state, queue_size=1)]
 
     def on_imu(self, msg):
         q = msg.orientation
@@ -73,25 +80,27 @@ class Sensors:
         with self.lock:
             self.imu.append((time.monotonic(), values, float(msg.header.stamp.to_sec())))
 
-    def on_joint(self, msg, joint):
+    def on_state(self, msg):
+        stamp = time.monotonic()
         with self.lock:
-            self.joints[joint] = (time.monotonic(), float(msg.pos), float(msg.vel))
-
-    def on_head(self, msg, joint):
-        with self.lock:
-            self.head[joint] = (time.monotonic(),float(msg.pos),float(msg.vel))
+            for joint, position, velocity in zip(msg.name, msg.position, msg.velocity):
+                if joint in self.head:
+                    self.head[joint].append((stamp, float(position), float(velocity)))
+                else:
+                    self.joints[joint] = (stamp, float(position), float(velocity))
 
     def snapshot(self, timestamp):
         with self.lock:
             nearest = min(self.imu, key=lambda v:abs(v[0]-timestamp)) if self.imu else None
             joints = dict(self.joints)
-            head = dict(self.head)
+            head = {name: min(history, key=lambda v: abs(v[0]-timestamp))
+                    for name, history in self.head.items() if history}
         if nearest is None or abs(nearest[0]-timestamp) > .15:
             raise ValueError('No fresh IMU orientation near camera host receipt')
         return nearest, joints, head
 
 
-def capture_worker(stream, width, height, latest):
+def capture_worker(stream, width, height, latest, status=None):
     def offer(value):
         # Consumer may empty the queue between full() and get(); do not turn
         # that ordinary race into a camera failure.
@@ -107,13 +116,21 @@ def capture_worker(stream, width, height, latest):
     try:
         while True:
             packet = read_exact(stream, 8+width*height*7, timeout=18.)
+            received = time.monotonic()
             timestamp = struct.unpack('<d', packet[:8])[0]
             n = width*height
             frame = Frame(timestamp,
                 np.frombuffer(packet, np.uint8, n*3, 8).reshape(height,width,3).copy(),
-                np.frombuffer(packet, '<f4', n, 8+n*3).reshape(height,width).copy())
+                np.frombuffer(packet, '<f4', n, 8+n*3).reshape(height,width).copy(),
+                received)
+            if status is not None:
+                status['last_received'] = received
+                status['last_frame_time'] = timestamp
+                status['frames'] = status.get('frames', 0)+1
             offer(frame)
     except Exception as exc:
+        if status is not None:
+            status['error'] = exc
         offer(exc)
 
 

@@ -1,7 +1,7 @@
 """Pi Plus Pro AMP contract audited from the running controller on 2026-11-10.
 
 Inputs/outputs use policy joint order. The MuJoCo adapter owns the conversion
-between hardware joint zeros and the original Mini Pi Plus simulation zeros.
+between hardware joint zeros and the MJCF joint zeros.
 """
 import hashlib
 import json

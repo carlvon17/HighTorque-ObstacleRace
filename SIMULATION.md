@@ -1,4 +1,4 @@
-# Mini Pi Plus：仿真导航＋基础 locomotion
+# Pi Plus Pro 仿真导航与基础运控
 
 > 2026-11-11：当前仿真与机载入口已共用 `navigation/`，AMP 固定为真机 Pro 版本。
 > 当前代码、测试结果和未通过项以 [共享导航状态](SHARED_NAVIGATION_STATUS.md) 为准；下文旧策略成绩保留作历史记录。
@@ -6,6 +6,70 @@
 
 本文记录原有真值导航基线。新增的相机驱动版本使用独立入口 `scripts/run_visual.py`，
 传感器边界、运行方式与验证记录见 [VISUAL_NAVIGATION.md](VISUAL_NAVIGATION.md)。
+
+## rt1 机载导航复跑
+
+在 macOS 上可以打开实时 MuJoCo 窗口。下例保留 01 起点和三箱布置，初始机身偏航为 0.14 rad（约 8°）。主视角跟随机器人，左下角显示头部 RGB 画面。去掉 `--spawn` 会使用 01 的标准正向起步姿态。运行结束后窗口保留最终姿态，可直接关闭。
+
+```sh
+# 现场照片中的折角入弯（默认场地）
+OPENBLAS_NUM_THREADS=1 .venv-shared/bin/mjpython scripts/run_visual.py --viewer --start 01 --spawn .55 -1.25 .14 --bend-profile corner
+# 原来的平滑入弯
+OPENBLAS_NUM_THREADS=1 .venv-shared/bin/mjpython scripts/run_visual.py --viewer --start 01 --spawn .55 -1.25 .14 --bend-profile smooth
+```
+
+选中的场地同时决定头部相机看到的白线和独立裁判使用的跑道边界。旧记录缺少 `bend_profile` 字段时，回放和评估使用原来的平滑版。[平滑入弯近景](output/athletics/bend_entry.png) · [折角入弯近景](output/athletics_corner/bend_entry.png)
+
+01 起点、初始偏航 0.14 rad 的两次 GUI 试跑使用相同的三箱布局、rt1 导航、相机时序和噪声种子。两次均跑到 300 s，均未到达箱区。
+
+| 入弯 | 沿赛道前进 | 停步时的导航记录 |
+|---|---:|---|
+| [折角](output/sim/rt1_gui_corner_01_20261111_154350/summary.json) | 2.19 m | 11.39 s 后始终没有识别出有效车道，最终为 `lost_vision`。基座停在外侧折点前约 0.26 m，头部画面可见一条带折角的白线。[末帧](output/sim/rt1_gui_corner_01_20261111_154350/camera_last_rgb.png) |
+| [平滑](output/sim/rt1_gui_01_20261111_152856/summary.json) | 3.51 m | 机器人进入大弯，末帧仍有车道拟合，前方地面深度覆盖检查返回 `unknown_depth`。 |
+
+`scripts/run_visual.py` 默认使用 2026-11-11 从 `shared_nav_20261111_rt1` 核对的 `OnboardNavigation`。普通赛道由当前白线控制，地面跟踪在后台更新，进入箱区或终点时转入同步跟踪。三份与仓内旧版不同的源码保存在 `vendor/pi_plus_pro/rt1/`，只调整了两处包导入。运行清单会核对这三份源码和其余共享依赖的机载哈希。旧基线可通过 `--navigation-profile shared` 运行。
+
+D435i 按真机 640×480 内参渲染，使用相同的 OpenCV 映射得到 256×192 RGB-D，深度量化为 1 mm。相机配置为 6 Hz。视觉时序取自 `20261111_070539Z_88bb2a6c` 的 1,106 个已处理帧，保留实际取帧间隔、接收时间、开始处理时间、重映射和感知耗时，以及后台结果可读的时机。仿真只渲染机载循环实际消费的帧。姿态与画面在下一个 20 ms 物理控制周期采样。图像使用 1 s 时效上限，绕箱控制可指定更早的制动时刻。发布器和监督器按同相位 50 Hz 模拟，监督器使用 AMP 策略反馈做最终速度适配。请求链路假设健康且无人接管。
+
+2 s 零速站立后开始播放机载时序。超过约 236 s 时重复该段采样间隔。机载样本只覆盖普通巡线，箱区的额外计算延迟尚无同版样本。反馈静差、电机和足底接触仍按现有 Pro 物理模型运行。
+
+```sh
+r=output/sim/rt1_01_three_boxes_20261111
+OPENBLAS_NUM_THREADS=1 .venv-shared/bin/python scripts/run_visual.py --bend-profile smooth --start 01 --duration 300 --seed 1 --record-sensors 12 --video --output "$r"
+.venv-shared/bin/python scripts/evaluate_visual.py "$r"
+.venv-shared/bin/python scripts/replay_navigation.py "$r/sensor_replay.npz" --map-observations "$r/observations.json"
+```
+
+本次三箱从 01 正向起步，目标 0.22 m/s，噪声种子 1。300 s 后净赛道进度为 0 m，最大正向进度约 1 cm。1,384 个已处理画面均由当前白线控制，其中 1,376 帧为 ready、6 帧图像过期、2 帧站立恢复。第 40–60 秒前向速度请求、监督器输出和策略滤波后输入均为 0.22，基座净位移约 0.014 mm。按保存的 50 Hz 物理状态重算，1,000 个采样点的双脚均接触地毯，左、右踝高度变化范围分别为 0.0065 和 0.0036 mm。这轮没有形成交替迈步，也未进入绕箱控制。[起步与足端统计](output/sim/rt1_01_three_boxes_20261111/start_diagnosis.json) · [独立裁判](output/sim/rt1_01_three_boxes_20261111/evaluation.json) · [前 12 s 传感器回放](output/sim/rt1_01_three_boxes_20261111/replay_check.json)
+
+## Pro 头部与相机
+
+默认 MuJoCo 场景使用随真机提供的 `PiPlusPro_SF_12L8A0G2H0W_Z_261010.xml`、网格、刚体惯量、关节限位和碰撞形状。20 个身体关节仍由原厂 AMP 控制。两个头部关节按任务记录中的实测反馈初始化并通过独立的姿态约束保持。真实头部伺服的静差和模式切换瞬态尚未建模。Pro CAD 导出省略了电机折算惯量，仿真沿用上游 Mini 对三类驱动的估计值。接触参数和驱动响应仍需实机辨识。
+
+D435i 使用实测焦距、主点及分辨率。导航相机跟随 `torso_link → head_yaw_link → head_pitch_link → camera_link`。光学朝向由 standby 的 18 帧地面法向、头部反馈和同时段 IMU 姿态估计。此处假定 IMU 与机身轴对齐，光心近似位于 CAD 镜头前表面。地面平面不能单独确定镜头平移或绕重力轴的方向。[安装参数](sim/pro_camera_mount.json)
+
+01 起步时复现标定的机身横滚 −1.26°、俯仰 +5.02°，头部 pitch 0.63837 rad、yaw 0。渲染深度独立拟合得到 43.95°（实测 43.97°）。同一机器人进入零速 AMP 自由站立 2 s 后，仿真深度俯角为 38.99°。真机行走时的相机俯角仍待相应工况的测量。[站姿核对](output/sim/pro_calibrated/standing/standing.json)
+
+```sh
+export OPENBLAS_NUM_THREADS=1
+.venv-shared/bin/python scripts/check_pro_standing.py --output output/sim/pro_calibrated/standing
+.venv-shared/bin/python scripts/run_visual.py --bend-profile smooth --navigation-profile shared --start 01 --duration 180 --video --output output/sim/pro_calibrated/official
+.venv-shared/bin/python scripts/evaluate_visual.py output/sim/pro_calibrated/official
+```
+
+以下数据来自头部模型同步时的回归。地面纹理窗口进一步适配待机与站立姿态后，同一场景的闭环进度和定位误差见 [Pro 任务头姿下的建图验证](SHARED_NAVIGATION_STATUS.md#pro-任务头姿下的建图验证)。
+
+三组 01 起点试跑的共享导航源码哈希相同，均开启种子 1 的传感器噪声，速度目标为 0.22 m/s。偏航对照只改变初始机身朝向，头部 yaw 始终设为 0。进度由独立裁判按 21.56 m 的赛道中心线计算。
+
+| 场景 | 结果 |
+|---|---|
+| 正向起步，三箱 | 63.14 s 因持续未走动而停车，净进度约 0.01 m。[裁判记录](output/sim/pro_calibrated/official/evaluation.json) |
+| 初始机身偏航 +8.0°，三箱 | 64.78 s 左大腿触碰 02 号箱，进度 15.73 m（72.9%）。[裁判记录](output/sim/pro_calibrated/heading8/evaluation.json) |
+| 同一偏航，无箱巡线 | 81.54 s 实际过线，81.62 s 视觉确认，随后观察 3 s，完整圈通过核验。[轨迹与终点评估](output/sim/pro_calibrated/lane_only/evaluation.json) |
+
+三组运行的头部 pitch 均在 0.63835–0.63850 rad 内，yaw 绝对值小于 0.00009 rad。[逐组状态统计](output/sim/pro_calibrated/head_during_runs.json)
+
+身体直行回归在 Pro 上复现了起步问题。零速站立 2 s 后，向 AMP 下发 0.4 m/s 直行指令 3 s，基座仅前进 0.028 m，测试要求超过 0.35 m。[定向测试记录](output/sim/pro_calibrated/tests.log)
 
 ## 2026-11-10：真机基础运控同步
 
@@ -52,7 +116,7 @@
 同步范围是 AMP 身体运控，使用原厂默认 Soccer / normal 速度模式。手柄模式按钮、
 真机启动状态机、看门狗、头部控制不属于此仿真适配器。旧 MJCF 与真机的关节零点通过
 相对默认姿态的关节位移转换；没有把真机肩部编码器偏置直接填进旧模型的关节角。
-动力学、力矩限制、碰撞几何、相机外参仍保留原仿真假设，不能据此声称整机物理一致。
+此次 11 月 10 日的对照使用旧 Mini 几何和机身固定相机。当前 Pro 场景的假设和结果见上节。
 
 ## 同步前的历史完成范围
 
@@ -213,3 +277,17 @@ uv pip install --python .venv/bin/python -r requirements-sim.txt
 许可证保留在下载目录。模型、权重、媒体等第三方资产的再分发条款以其上游说明为准。
 
 本次环境为 macOS、Python 3.13.5、MuJoCo 3.17.0、PyTorch 2.15.0、NumPy 2.5.4。
+
+## RT11 箱区仿真
+
+`releases/shared_nav_20261111_rt11/` 保存 2026-11-11 20:17（北京时间）发布记录对应的设备源码、配置和策略。目录内的 `release_manifest.json` 给出 88 个文件的 SHA-256。仿真读取这个目录中的控制器，由 MuJoCo 生成新的 RGB-D 观测。`reference/rt11_sim/` 保存 RT10 实机记录 20261111_094517Z_ac10347e 的时序字段和相机配置。
+
+使用 Python 3.11 和 `requirements-shared-sim.txt` 中的依赖，从仓库根目录运行。每次运行请给 `--out` 指定一个新目录。
+
+```sh
+python scripts/generate_field.py --bend-profile corner
+python scripts/rt11_sim/run_validation.py boxes_center \
+  --source releases/shared_nav_20261111_rt11 --out output/sim/rt11_boxes_center
+```
+
+`boxes_oblique` 用于斜向进入箱区，`full_01` 从起点运行整圈。`summary.json` 记录终止原因和已通过的箱子，`camera_rgbd.zip` 保存模拟相机帧。

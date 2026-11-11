@@ -360,7 +360,7 @@ def supervisor_role(args):
             if publishers('/cmd_vel')!=['/joy_teleop']:raise RuntimeError('velocity ownership changed during trial')
             time.sleep(.03)
         if vision.returncode:raise RuntimeError((out/'vision/vision_summary.json').read_text())
-        status='limited_line_trial_completed' if args.execute else 'zero_output_validation_completed'
+        status=('full_lap_completed' if args.shared_navigation else 'limited_line_trial_completed') if args.execute else 'zero_output_validation_completed'
     except Exception as exc:status='failed: '+str(exc)
     finally:
         signal.signal(signal.SIGTERM,signal.SIG_IGN);signal.signal(signal.SIGHUP,signal.SIG_IGN)
@@ -390,12 +390,13 @@ def supervisor_role(args):
 
 
 def main():
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('role',choices=['supervise','proxy','vision']);p.add_argument('--execute',action='store_true');p.add_argument('--output',type=Path,required=True);p.add_argument('--token',default='lane-'+str(time.time_ns()));p.add_argument('--duration',type=float,default=6.);p.add_argument('--speed',type=float)
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('role',choices=['supervise','proxy','vision']);p.add_argument('--execute',action='store_true');p.add_argument('--output',type=Path,required=True);p.add_argument('--token',default='lane-'+str(time.time_ns()));p.add_argument('--duration',type=float);p.add_argument('--speed',type=float)
     p.add_argument('--turn-test',action='store_true')
     p.add_argument('--calibrated-turns',action='store_true')
     p.add_argument('--shared-navigation',action='store_true')
     p.add_argument('--config',type=Path,default=ROOT/'deploy/pro_config.json')
     args=p.parse_args()
+    if args.duration is None:args.duration=300. if args.shared_navigation else 6.
     if args.speed is None:args.speed=.22 if args.shared_navigation else .04
     if args.shared_navigation and (args.calibrated_turns or args.turn_test):p.error('Shared navigation cannot be combined with legacy turn trials')
     maximum_duration=300 if args.shared_navigation else (180 if args.calibrated_turns else 30)

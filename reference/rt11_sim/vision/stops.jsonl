@@ -1,0 +1,3 @@
+{"frame_relation":"subsequent_startup_reference","frame_timestamp_s":480.434554341,"time":1794390319.4317274,"monotonic_s":478.219855708,"event":"stop"}
+{"frame_relation":"decision_frame","frame_timestamp_s":514.745544615,"time":1794390356.2324412,"monotonic_s":515.020570091,"event":"stop"}
+{"frame_relation":"decision_frame","frame_timestamp_s":537.918784538,"time":1794390379.3725069,"monotonic_s":538.160635303,"event":"stop"}

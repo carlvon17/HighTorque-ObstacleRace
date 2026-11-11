@@ -22,9 +22,18 @@ def build(release_id, output, fixture=None):
     destination.mkdir(parents=True,exist_ok=False)
     names=sorted({str(p.relative_to(ROOT)) for folder in ('navigation','deploy')
                   for p in (ROOT/folder).iterdir() if p.suffix in ('.py','.json','.cpp','.sh','.md','.txt')})
-    names+=['sim/visual_navigation.py','scripts/test_shared_navigation.py','scripts/replay_navigation.py','SHARED_NAVIGATION_STATUS.md',
+    names+=['deploy/nav','sim/pro_camera_mount.json','scripts/test_model_calibration.py','vendor/pi_plus_pro/amp.yaml','vendor/pi_plus_pro/amp.trt','vendor/pi_plus_pro/pd.yaml','scripts/test_line_supervisor.py','scripts/test_navigation_cli.py','sim/visual_navigation.py','scripts/test_shared_navigation.py','scripts/test_navigation_buttons.py','scripts/test_head_restore.py','scripts/test_head_profile.py','scripts/replay_navigation.py','SHARED_NAVIGATION_STATUS.md',
+            'sim/d435i_camera.json','reference/robot/PiPlusPro_SF_12L8A0G2H0W_Z_261010/urdf/PiPlusPro_SF_12L8A0G2H0W_Z_261010.urdf',
             *['scripts/test_'+name+'.py' for name in ('depth_ground','ground_color_integration','surface_odometry','rgbd_odometry','floor_odometry','floor_projection',
+                                                      'floor_map','sensor_recovery','single_boundary',
                                                       'map_relocalization','gap_controller','visual_finish','corridor_feedback','motion_recovery')]]
+    if fixture:
+        import numpy as np
+        with np.load(fixture,allow_pickle=False) as sensors:
+            if str(sensors.get('navigation_profile','shared'))=='rt1':
+                names.append('sim/rt1_control.py')
+                names.extend(str(p.relative_to(ROOT)) for p in sorted((ROOT/'vendor/pi_plus_pro/rt1').iterdir())
+                             if p.suffix in ('.py','.csv','.json'))
     files={}
     for name in names:
         source=ROOT/name;data=source.read_bytes()

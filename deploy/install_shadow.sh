@@ -47,7 +47,8 @@ fi
 g++ -O2 -std=c++14 deploy/realsense_stream.cpp \
   -I/usr/local/include -L/usr/local/lib -Wl,-rpath,/usr/local/lib \
   -lrealsense2 -o deploy/realsense_stream
-.venv/bin/python -m py_compile navigation/*.py deploy/shared_navigation.py deploy/shadow.py deploy/geometry.py deploy/line_trial.py
+.venv/bin/python -m py_compile navigation/*.py deploy/shared_navigation.py deploy/shadow.py deploy/geometry.py deploy/line_trial.py deploy/navigation_buttons.py deploy/navigation_cli.py deploy/head_step.py
+chmod +x deploy/nav
 .venv/bin/python -c 'import cv2,numpy; print("Runtime dependencies:",cv2.__version__,numpy.__version__)'
 printf 'Installed shared navigation in %s; standalone entry is shadow-only\n' "$nav_root"
 printf 'No robot control nodes were started. See deploy/README.md for running the sensor check.\n'

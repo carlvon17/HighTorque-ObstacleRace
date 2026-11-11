@@ -94,6 +94,29 @@ class GroundEstimator:
             finite&=mask
         # This is an observation range bound, not a prescribed standing height.
         finite&=(np.linalg.norm(points[...,:2],axis=-1)<4.)&(abs(points[...,2])<2.)
+        # A trusted recent plane lets consecutive frames skip both the horizontal
+        # neighbour scan and the height-bin search: the floor cannot jump far
+        # between frames, so only its neighbourhood needs to be refitted. The
+        # fitted normal gate below still rejects anything but a near-horizontal
+        # surface, and any failure falls through to the unchanged full search.
+        if self.last is not None and timestamp is not None and self.last_time is not None and 0<=timestamp-self.last_time<=2.:
+            near=points[finite&(abs(points@self.last.normal+self.last.offset)<.03)]
+            if len(near)>12000:near=near[np.linspace(0,len(near)-1,12000).astype(int)]
+            if len(near)>=50:
+                matrix=np.column_stack([near[:,:2],np.ones(len(near))])
+                coefficients,_,rank,_=np.linalg.lstsq(matrix,near[:,2],rcond=None)
+                if rank==3:
+                    normal=np.r_[-coefficients[:2],1.];normal/=np.linalg.norm(normal)
+                    offset=-coefficients[2]*normal[2]
+                    rms=float(np.sqrt(np.mean((near@normal+offset)**2)))
+                    if (np.linalg.norm(coefficients[:2])<=np.tan(np.deg2rad(12)) and abs(coefficients[2]-self.last.z0)<.08
+                            and coefficients[2]<-.03 and rms<=.005):
+                        area,span=self._support(near)
+                        if area>=.025 and span[1]>=.18 and span[0]>=.055:
+                            result=GroundPlane(True,normal,float(offset),float(coefficients[2]),
+                                               int(len(near)),area,rms,'measured_depth_plane')
+                            self.last=result;self.last_time=timestamp;self.result=result
+                            return result
         horizontal=self._horizontal_mask(points,finite)
         cloud=points[horizontal]
         if len(cloud)<60:return self._invalid('insufficient_horizontal_depth')

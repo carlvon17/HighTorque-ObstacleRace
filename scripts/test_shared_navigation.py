@@ -19,6 +19,18 @@ from navigation.calibration import calibration_reasons
 
 
 class SharedTests(unittest.TestCase):
+    def test_projection_needs_head_feedback_at_image_time_even_in_shadow(self):
+        from deploy.shared_navigation import frame_head_reasons
+        config = json.loads((ROOT/'deploy/pro_config.json').read_text())
+        captured = {name: (5., angle, 0.) for name, angle in config['head_reference_rad'].items()}
+        self.assertEqual(frame_head_reasons(config, captured, 5.02), [])
+        self.assertTrue(frame_head_reasons(config, captured, 4.7))
+        self.assertTrue(frame_head_reasons(config, captured, 5.3))
+        captured['head_yaw_joint'] = (5., .15, 0.)
+        self.assertTrue(frame_head_reasons(config, captured, 5.))
+        del captured['head_pitch_joint']
+        self.assertTrue(frame_head_reasons(config, captured, 5.))
+
     def test_dependency_mismatch_is_rejected(self):
         from navigation.environment import verify_dependencies
         verify_dependencies()

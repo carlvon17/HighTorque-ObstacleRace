@@ -18,6 +18,27 @@ def smooth_setpoint(start, target, elapsed, duration):
     return start+(target-start)*(u*u*(3.-2.*u))
 
 
+def saved_head_targets(pose, current, limits):
+    """Validate both head axes, including previously saved pitch-only records."""
+    if pose.get('schema') != 'competition.task_head_pose.v1':
+        raise ValueError('Unexpected saved head pose schema')
+    names = {'head_pitch_joint', 'head_yaw_joint'}
+    command = dict(pose['joint_command_reference_rad'])
+    measured = dict(pose['measured_joint_reference_rad'])
+    if set(measured) != names or set(current) != names or set(limits) != names:
+        raise ValueError('Saved head restore requires both head joints')
+    # Earlier records saved only the pitch command with measured yaw at zero.
+    if set(command) == {'head_pitch_joint'} and measured['head_yaw_joint'] == 0.:
+        command['head_yaw_joint'] = 0.
+    if set(command) != names:
+        raise ValueError('Saved commands must contain exactly the two head joints')
+    for name in ('head_pitch_joint', 'head_yaw_joint'):
+        lower, upper = limits[name]
+        command[name] = bounded_absolute_target(current[name], float(command[name]), lower, upper)
+        measured[name] = bounded_absolute_target(current[name], float(measured[name]), lower, upper)
+    return command, measured
+
+
 def validate_body_only_amp(config, body_names):
     names=config.get('joint_names',[])
     if (config.get('algorithm')!='amp' or config.get('motor_group')!='all-amp'

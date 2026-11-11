@@ -1,7 +1,9 @@
 """Generate metric track geometry, painted carpet texture, and portable MJCF."""
+import argparse
 import csv
 import json
 import math
+import sys
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -10,12 +12,12 @@ from PIL import Image, ImageDraw
 from obstacle_parts import crate_boards
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "output/athletics"
-MJ = OUT / "mujoco"
+sys.path.insert(0, str(ROOT))
+from sim.field import FIELD_DIRS
 C = json.loads((ROOT / "scene_config.json").read_text())
 
 
-def geometry():
+def smooth_geometry():
     r, R, d = C["small_radius"], C["large_radius"], C["center_distance"]
     angle = math.radians(C["large_arc_join_degrees"])
     p0 = np.array([C["transition_start_x"], r])
@@ -44,16 +46,52 @@ def length(points):
     return float(np.linalg.norm(np.roll(points, -1, axis=0)-points, axis=1).sum())
 
 
-def ribbon(points, normals, width):
-    return np.concatenate([points+normals*width/2, (points-normals*width/2)[::-1]])
+def corner_contour(offset):
+    # Each tape intersects its own concentric arc. The outer tape reaches
+    # its corner earlier than the inner tape when travelling along +X.
+    small = C["small_radius"] + offset
+    large = C["large_radius"] + offset
+    distance = C["center_distance"]
+    join_x = distance - math.sqrt(large**2 - small**2)
+    angle = math.atan2(small, join_x - distance)
+    upper = np.column_stack([np.linspace(0, join_x, 240), np.full(240, small)])
+    theta = np.linspace(angle, -angle, 900)
+    big_arc = np.column_stack([distance + large*np.cos(theta), large*np.sin(theta)])
+    lower = upper[::-1] * [1, -1]
+    theta = np.linspace(-math.pi/2, -3*math.pi/2, 450)
+    small_arc = small * np.column_stack([np.cos(theta), np.sin(theta)])
+    return np.concatenate([upper[:-1], big_arc[:-1], lower[:-1], small_arc[:-1]])
 
 
-def main():
-    (MJ / "assets").mkdir(parents=True, exist_ok=True)
-    inner, outer, center, normals = geometry()
-    data = {"inner": inner.tolist(), "outer": outer.tolist(), "center": center.tolist(), "normals": normals.tolist()}
-    (OUT / "geometry.json").write_text(json.dumps(data))
+def tape_miters(points):
+    # Offset adjacent segments by the tape half-width and intersect their
+    # offset lines at each vertex. This keeps the tape continuous at a kink.
+    segments = np.roll(points, -1, axis=0) - points
+    segments /= np.linalg.norm(segments, axis=1)[:, None]
+    outgoing = np.column_stack([-segments[:, 1], segments[:, 0]])
+    incoming = np.roll(outgoing, 1, axis=0)
+    return (incoming + outgoing) / (1 + (incoming*outgoing).sum(axis=1))[:, None]
+
+
+def generate(profile):
+    out = FIELD_DIRS[profile]
+    mj = out / "mujoco"
+    (mj / "assets").mkdir(parents=True, exist_ok=True)
+    if profile == "smooth":
+        inner, outer, center, inner_normals = smooth_geometry()
+        outer_normals = inner_normals
+        bend_note = "The transition curve is a tangent-continuous cubic Bezier, not dimensioned in the source."
+    else:
+        width = C["track_width"]
+        inner, outer, center = (corner_contour(offset) for offset in (0., width, width/2))
+        inner_normals, outer_normals = tape_miters(inner), tape_miters(outer)
+        bend_note = "Straight tape meets the large circle at their intersection, mirrored on the return side. The photo identifies a sharp join; its angle was not surveyed."
+    data = {"inner": inner.tolist(), "outer": outer.tolist(), "center": center.tolist(), "normals": inner_normals.tolist()}
+    if profile == "corner":
+        data["outer_normals"] = outer_normals.tolist()
+    (out / "geometry.json").write_text(json.dumps(data))
     metrics = {
+        "bend_profile": profile,
         "inner_boundary_centerline_perimeter_m": length(inner),
         "outer_boundary_centerline_perimeter_m": length(outer),
         "lane_centerline_perimeter_m": length(center),
@@ -71,7 +109,7 @@ def main():
         "assumptions": [
             "The diagram's 1 m / 2 m arrows are interpreted as inner-boundary radii.",
             "The 5 m arrow is interpreted as the two circle centers' separation.",
-            "The transition curve is a tangent-continuous cubic Bezier, not dimensioned in the source.",
+            bend_note,
             "The 0.5 m lane width is measured between boundary tape centerlines; clear gap is 0.492 m.",
             "The site photograph supports inner/outer/inner staggering. The 0.5 m longitudinal spacing, 0.65 m first station, exact tape alignment, board construction and yaw remain estimates, not surveyed coordinates.",
             "Red, yellow and green crate paint is a requested perception robustness test, not an assumed competition color requirement.",
@@ -81,7 +119,7 @@ def main():
             "No competition robot or control policy is included."
         ]
     }
-    (OUT / "measurements.json").write_text(json.dumps(metrics, indent=2))
+    (out / "measurements.json").write_text(json.dumps(metrics, indent=2))
     width, height = C["texture_resolution"]
     cx, cy = C["carpet_center"]
     sx, sy, _ = C["carpet_dimensions"]
@@ -96,7 +134,7 @@ def main():
     rgb = np.clip(np.array(C["carpet_rgb"], dtype=np.int16)+grain, 0, 255).astype(np.uint8)
     im = Image.fromarray(rgb)
     draw = ImageDraw.Draw(im)
-    for points in (inner, outer):
+    for points, normals in ((inner, inner_normals), (outer, outer_normals)):
         # Separate closed polygons ensure no fill across the entire interior.
         outside = [pixel(p) for p in points+normals*C["line_width"]/2]
         inside = [pixel(p) for p in points-normals*C["line_width"]/2]
@@ -110,7 +148,7 @@ def main():
         x, y = start["position"]
         a, b = pixel((x-.03, y+.03)), pixel((x+.03, y-.03))
         draw.ellipse([a, b], fill=(225, 48, 49))
-    im.save(MJ / "assets/carpet.png", compress_level=6)
+    im.save(mj / "assets/carpet.png", compress_level=6)
 
     root = ET.Element("mujocoinclude")
     asset = ET.SubElement(root, "asset")
@@ -135,7 +173,7 @@ def main():
         x, y = start["position"]
         ET.SubElement(field, "site", name=f"hb_start_{start['id']}", pos=f"{x} {y} 0.002", type="sphere", size="0.015", rgba="0 0 0 0", group="3")
     ET.indent(root)
-    ET.ElementTree(root).write(MJ / "field.xml", encoding="unicode", xml_declaration=False)
+    ET.ElementTree(root).write(mj / "field.xml", encoding="unicode", xml_declaration=False)
     scene = ET.Element("mujoco", model=C["name"])
     ET.SubElement(scene, "compiler", angle="radian", autolimits="true")
     ET.SubElement(scene, "option", timestep="0.002", gravity="0 0 -9.81")
@@ -149,19 +187,23 @@ def main():
     ET.SubElement(world, "light", name="hb_sun", pos="1 -3 7", dir="0.2 0.3 -1", directional="true", diffuse="0.8 0.8 0.8")
     ET.SubElement(world, "camera", name="hb_top", pos="3 0 11", xyaxes="1 0 0 0 1 0", fovy="36")
     ET.indent(scene)
-    ET.ElementTree(scene).write(MJ / "scene.xml", encoding="unicode", xml_declaration=False)
+    ET.ElementTree(scene).write(mj / "scene.xml", encoding="unicode", xml_declaration=False)
     # Counterclockwise samples; useful as geometric reference, not a collision-avoiding policy.
     ccw = center[::-1]
     tangents = np.roll(ccw, -1, axis=0)-np.roll(ccw, 1, axis=0)
     distances = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(ccw, axis=0), axis=1))])
-    with (OUT / "centerline.csv").open("w", newline="") as f:
+    with (out / "centerline.csv").open("w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["s_m", "x_m", "y_m", "yaw_rad"])
         for s, p, v in zip(distances, ccw, tangents):
             writer.writerow([f"{s:.7f}", f"{p[0]:.7f}", f"{p[1]:.7f}", f"{math.atan2(v[1], v[0]):.7f}"])
-    (OUT / "spawn_points.json").write_text(json.dumps({"frame": "Z up, metres, origin at small-circle center on carpet top", "direction": "counterclockwise", "z_note": "Positions specify ground contact. Add robot-specific base standing height.", "starts": C["starts"]}, indent=2))
+    (out / "spawn_points.json").write_text(json.dumps({"frame": "Z up, metres, origin at small-circle center on carpet top", "direction": "counterclockwise", "z_note": "Positions specify ground contact. Add robot-specific base standing height.", "starts": C["starts"]}, indent=2))
     print(json.dumps(metrics, indent=2))
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--bend-profile", choices=FIELD_DIRS, help="Generate only this course (default: both).")
+    profile = parser.parse_args().bend_profile
+    for selected in ([profile] if profile else FIELD_DIRS):
+        generate(selected)

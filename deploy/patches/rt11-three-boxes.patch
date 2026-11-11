@@ -1,0 +1,1197 @@
+diff --git a/deploy/NOSTOP.md b/deploy/NOSTOP.md
+index 691ef76..2cab65d 100644
+--- a/deploy/NOSTOP.md
++++ b/deploy/NOSTOP.md
+@@ -1,3 +1,11 @@
++# RT11 三箱导航
++
++箱区控制从 RGB-D 的箱面和顶缘估计箱体方向与相对位置，用足底运动学和 IMU 在视觉帧之间修正前进、横移和制动指令。每个发布周期使用已完成的一帧和与之配对的控制目标。箱区观察超时或 IMU 失效会请求零速。
++
++全身越过第三只箱子后，机器人向实测车道中心回正，随后由巡线控制继续行进。本任务按一圈设计，终点行为和 300 秒任务时限继承自 rt10。当前版本已在 MuJoCo 验证。
++
++## 父版本记录
++
+ # RT10：只保留 300 s 停止的整圈导航
+ 
+ 本包由 `shared_nav_20261111_rt5` 复制而来，只改了停车判据，感知、规划、AMP 适配和发布链路不变。
+diff --git a/deploy/shadow.py b/deploy/shadow.py
+index b94e795..3bce977 100644
+--- a/deploy/shadow.py
++++ b/deploy/shadow.py
+@@ -66,6 +66,8 @@ class Sensors:
+     def __init__(self):
+         self.lock = threading.Lock()
+         self.imu = deque(maxlen=500)
++        self.latest_imu = None
++        self.leg_callback = None
+         self.joints = {}
+         self.head = {name: deque(maxlen=200) for name in ('head_pitch_joint', 'head_yaw_joint')}
+         self.subs = [
+@@ -78,16 +80,24 @@ class Sensors:
+         if msg.orientation_covariance[0] < 0 or not np.isfinite(values).all() or abs(np.linalg.norm(values)-1) > .05:
+             return
+         with self.lock:
+-            self.imu.append((time.monotonic(), values, float(msg.header.stamp.to_sec())))
++            packet = (time.monotonic(), values, float(msg.header.stamp.to_sec()))
++            self.imu.append(packet)
++            self.latest_imu = packet
+ 
+     def on_state(self, msg):
+-        stamp = time.monotonic()
+         with self.lock:
++            stamp = time.monotonic()
++            imu = self.latest_imu
+             for joint, position, velocity in zip(msg.name, msg.position, msg.velocity):
+                 if joint in self.head:
+                     self.head[joint].append((stamp, float(position), float(velocity)))
+                 else:
+                     self.joints[joint] = (stamp, float(position), float(velocity))
++        # Consume each 18 Hz JointState once, on its own ROS callback. Keep FK
++        # outside the sensor lock, camera processing and the velocity publisher.
++        callback = self.leg_callback
++        if callback is not None and imu is not None and 0. <= stamp-imu[0] < .04:
++            callback(stamp, dict(zip(msg.name, msg.position)), imu[1])
+ 
+     def snapshot(self, timestamp):
+         with self.lock:
+diff --git a/deploy/shared_navigation.py b/deploy/shared_navigation.py
+index 6c3d1f6..6000a33 100644
+--- a/deploy/shared_navigation.py
++++ b/deploy/shared_navigation.py
+@@ -5,6 +5,7 @@ and immutable factory-contract checks. Published requests are desired policy
+ velocities; the sole 50 Hz guard applies navigation.command.AMPCommandAdapter.
+ """
+ import argparse
++from dataclasses import dataclass, replace
+ import importlib
+ import json
+ from pathlib import Path
+@@ -71,6 +72,36 @@ class TurnCutoff:
+         return True
+ 
+ 
++@dataclass(frozen=True)
++class PublishedPlan:
++    vector: tuple = (0., 0., 0.)
++    deadline: float = 0.
++    pulse: object = None
++    reason: str = 'initializing'
++    scene: object = None
++    frame_time: object = None
++    fresh: bool = False
++    box_servo: object = None
++
++    def evaluate(self, stamp, imu, body_from_imu, cutoff):
++        if self.box_servo is not None and stamp >= self.deadline:
++            return (0., 0., 0.), 'box_observation_expired', False
++        if self.pulse is None and self.box_servo is None:
++            return self.vector, self.reason, self.fresh
++        if imu is None or not 0. <= stamp-imu[0] <= .15:
++            reason = 'no_fresh_turn_imu' if self.pulse is not None else 'no_fresh_box_imu'
++            return (0., 0., 0.), reason, False
++        attitude = quaternion_matrix_xyzw(imu[1]) @ body_from_imu.T
++        if self.pulse is not None and not cutoff.permits(self.pulse, np.arctan2(attitude[1,0], attitude[0,0])):
++            return (0., 0., 0.), 'turn_angle_limit', False
++        vector = self.vector
++        if self.box_servo is not None:
++            vector = self.box_servo(stamp, np.array(self.vector), attitude)
++            if np.shape(vector) != (3,) or not np.isfinite(vector).all():
++                return (0., 0., 0.), 'invalid_box_request', False
++        return vector, self.reason, self.fresh
++
++
+ def run(args, publish=False):
+     import rospy
+     from geometry_msgs.msg import TwistStamped
+@@ -107,11 +138,16 @@ def run(args, publish=False):
+             terminate.set()
+         signal.signal(signal.SIGTERM, stop_signal)
+         signal.signal(signal.SIGHUP, stop_signal)
+-    def request(vector, reason='initializing', scene=None, frame_time=None, new_frame=False):
++    def request(vector, reason='initializing', scene=None, frame_time=None, new_frame=False, box_deadline=None):
+         if publisher is not None:
+             msg = TwistStamped()
+             msg.header.frame_id = args.token
+             msg.header.stamp = rospy.Time.now()
++            # Recheck after servo calculation, including the tick straddling a lease.
++            if terminate.is_set():
++                vector, reason, new_frame = (0., 0., 0.), 'termination_requested', False
++            elif box_deadline is not None and time.monotonic() >= box_deadline:
++                vector, reason, new_frame = (0., 0., 0.), 'box_observation_expired', False
+             msg.twist.linear.x, msg.twist.linear.y, msg.twist.angular.z = map(float, vector)
+             if archive is not None:
+                 archive.decision(msg.header.stamp.to_nsec(), reason, scene, frame_time, new_frame)
+@@ -123,38 +159,35 @@ def run(args, publish=False):
+     # publisher thread repeats the newest planned velocity and applies the
+     # observation lease itself, so a slow frame never looks like a dead link.
+     # Replace the vector and its capture-based deadline together.
+-    publish_state = ([0., 0., 0.], 0., None, 'initializing', None, None, False)
++    publish_state = PublishedPlan()
+     turn_cutoff = TurnCutoff()
+     body_from_imu = np.asarray(config['body_from_imu'])
+ 
+     def inhibit(reason=None):
+         nonlocal publish_state
+         # RT10: an inhibit only relabels the request; it never zeroes it.
+-        vector, deadline, pulse, _, scene, frame_time, fresh = publish_state
+-        publish_state = (vector, deadline, pulse, reason or scene or 'perception_inhibit',
+-                         scene, frame_time, fresh)
++        publish_state = replace(publish_state, reason=reason or publish_state.scene or 'perception_inhibit')
+     publish_stop = threading.Event()
+ 
+     def publish_loop():
++        next_tick = time.monotonic()
+         while not publish_stop.is_set():
+-            vector, deadline, pulse, reason, scene, frame_time, fresh = publish_state
++            plan = publish_state
++            imu = sensors.latest_imu
+             now = time.monotonic()
+             if terminate.is_set():
+-                vector = [0., 0., 0.]
+-                reason, fresh = 'termination_requested', False
+-            elif pulse is not None:
+-                with sensors.lock:
+-                    imu = sensors.imu[-1] if sensors.imu else None
+-                if imu is None or now-imu[0]>.15:
+-                    reason, fresh = 'no_fresh_turn_imu', False
+-                    vector = [0., 0., 0.]
+-                else:
+-                    attitude = quaternion_matrix_xyzw(imu[1])@body_from_imu.T
+-                    if not turn_cutoff.permits(pulse,np.arctan2(attitude[1,0],attitude[0,0])):
+-                        reason, fresh = 'turn_angle_limit', False
+-                        vector = [0., 0., 0.]
+-            request(vector, reason, scene, frame_time, fresh)
+-            time.sleep(.02)
++                vector, reason, fresh = (0., 0., 0.), 'termination_requested', False
++            else:
++                vector, reason, fresh = plan.evaluate(now, imu, body_from_imu, turn_cutoff)
++                if plan is not publish_state:
++                    continue
++            request(vector, reason, plan.scene, plan.frame_time, fresh,
++                    plan.deadline if plan.box_servo is not None else None)
++            next_tick += .02
++            now = time.monotonic()
++            if next_tick <= now:
++                next_tick = now + .02
++            publish_stop.wait(next_tick-now)
+ 
+     publisher_thread = None
+     if publish:
+@@ -194,6 +227,12 @@ def run(args, publish=False):
+             runtime = OnboardNavigation(sw, sh, intrinsics, config['camera_position_body_m'],
+                 config['camera_rotation_optical_to_body'], args.speed,
+                 float(config.get('observation_lease_s', .35)))
++            if hasattr(runtime, 'publish_velocity') and not hasattr(runtime, 'freeze_publish_velocity'):
++                raise ValueError('A 50 Hz box controller must implement freeze_publish_velocity()')
++            if hasattr(runtime, 'update_legs'):
++                def update_legs(stamp, joints, quat):
++                    return runtime.update_legs(stamp, joints, quaternion_matrix_xyzw(quat) @ body_from_imu.T)
++                sensors.leg_callback = update_legs
+             latest = queue.Queue(maxsize=1)
+             # Frame arrival is recorded by the reader, not inferred from how long
+             # our own processing took, so a slow frame cannot fake a dead camera.
+@@ -287,8 +326,11 @@ def run(args, publish=False):
+                     pulse = (turn.started, runtime.initial_yaw+turn.origin, turn.direction)
+                 reason = ','.join(current_reasons) if current_reasons else runtime.reason
+                 frame_time = raw.time if raw is not None else runtime.last_frame_time
+-                publish_state = (desired.tolist(), runtime.deadline, pulse,
+-                                 reason, runtime.scene, frame_time, raw is not None)
++                # The published hook owns this *same* command's plan parameters.
++                # Its only live inputs are the current AHRS and completed encoder samples.
++                freeze = getattr(runtime, 'freeze_publish_velocity', None)
++                publish_state = PublishedPlan(tuple(desired), runtime.deadline, pulse,
++                    reason, runtime.scene, frame_time, raw is not None, freeze() if freeze else None)
+                 if not publish:
+                     request(desired)
+                 if processing_ms is not None:
+@@ -319,6 +361,7 @@ def run(args, publish=False):
+     except (Exception, KeyboardInterrupt) as exc:
+         status = 'error: '+str(exc)
+     finally:
++        sensors.leg_callback = None
+         publish_stop.set()
+         if publisher_thread is not None:
+             publisher_thread.join(timeout=1.)
+diff --git a/navigation/box_servo.py b/navigation/box_servo.py
+new file mode 100644
+index 0000000..b7f5d5f
+--- /dev/null
++++ b/navigation/box_servo.py
+@@ -0,0 +1,373 @@
++"""Body-relative box-face measurements and a metric servo for staggered crates."""
++from dataclasses import dataclass
++from threading import Lock
++
++from navigation.leg_odometry import ProLegOdometry
++import cv2
++import numpy as np
++
++
++def rot(a):
++    return np.array([[np.cos(a),-np.sin(a)],[np.sin(a),np.cos(a)]])
++
++
++def wrap(a):
++    return (a+np.pi)%(2*np.pi)-np.pi
++
++
++def wall_headings(level, height, keep, components):
++    """Measure square-box axes from vertical surfaces in each depth component."""
++    if not len(components):
++        return {}
++    component_image=np.zeros(keep.shape,np.int32)
++    component_image[keep]=components
++    stride=2
++    du=level[stride:-stride,2*stride:]-level[stride:-stride,:-2*stride]
++    dv=level[2*stride:,stride:-stride]-level[:-2*stride,stride:-stride]
++    normals=np.cross(du,dv)
++    magnitude=np.linalg.norm(normals,axis=2)
++    normal_z=np.abs(normals[...,2])/np.maximum(magnitude,1e-12)
++    inside=(height[stride:-stride,stride:-stride]<.365)&(normal_z<.25)
++    labels=component_image[stride:-stride,stride:-stride][inside]
++    normals=normals[inside]
++    result={}
++    for label in np.unique(labels):
++        if not label:
++            continue
++        walls=normals[labels==label]
++        if len(walls)<25:
++            continue
++        angles=np.arctan2(walls[:,1],walls[:,0])
++        votes=np.exp(4j*angles)
++        # Both visible walls of a cube give the same fourth harmonic.
++        # Reject components with no dominant square wall orientation.
++        mean=np.mean(votes)
++        if abs(mean)<.68:
++            continue
++        inliers=np.real(votes*np.conj(mean)/abs(mean))>.87
++        if np.sum(inliers)>=20:
++            result[label]=np.angle(np.mean(votes[inliers]))/4
++    return result
++
++
++@dataclass(frozen=True)
++class BoxFrame:
++    position: np.ndarray
++    velocity: np.ndarray
++    centers: tuple
++    heading: float
++    side: float
++    stamp: float
++    leg_anchor: object
++    kick_until: float
++
++
++class BoxServo:
++    def __init__(self):
++        self.control_lock=Lock()
++        self.leg_lock=Lock()
++        self.latest_leg=None
++        self.frame=None
++        self.pending_frame=None
++        self.heading=None
++        self.pos=np.zeros(2)
++        self.velocity=np.zeros(2)
++        self.boxes=[]
++        self.index=0
++        self.phase='enter'
++        self.along_started=None
++        self.side=0
++        self.legs=ProLegOdometry()
++        self.leg_anchor=None
++        self.last_time=None
++        self.last_odom=None
++        self.visible=[]
++        self.done=False
++        self.last_cmd=np.zeros(3)
++        self.target=None
++        self.error=None
++        self.track_mid=None
++        self.corrections=[]
++        self.travel=0.
++        self.stationary=0.
++        self.kick_until=0.
++
++    def observe(self, frame, attitude, camera, tracked, origin_yaw, lane):
++        yaw=np.arctan2(attitude[1,0],attitude[0,0])
++        plane=camera.ground.result
++        if self.done:return
++        xyz=(camera.rays*frame.depth[...,None])@camera.rotation32.T+camera.position32
++        level=xyz@attitude.T
++        if plane.valid:
++            height=plane.height(level)
++        else:
++            floor=level[::4,::4,2]; floor=floor[np.isfinite(floor)]
++            if len(floor)<120:return
++            height=level[...,2]-np.percentile(floor,12)
++        keep=np.isfinite(height)&(height>.065)&(height<.48)&(xyz[...,0]>.15)&(frame.depth<2.6)
++        points3=level[keep]
++        grid=np.zeros((240,240),np.uint8)
++        cells=np.clip(np.floor(points3[:,:2]/.025+120).astype('int32'),0,239)
++        grid[cells[:,1],cells[:,0]]=1
++        n,labels=cv2.connectedComponents(cv2.dilate(grid,np.ones((3,3),np.uint8)))
++        groups=labels[cells[:,1],cells[:,0]]
++        headings=wall_headings(level,height,keep,groups) if self.heading is None else {}
++        clouds=[]
++        for j in range(1,n):
++            points=points3[groups==j]
++            if len(points)<25:continue
++            pts=points[:,:2]
++            if np.max(np.ptp(pts,axis=0))>.39 or np.ptp(points[:,2])<.055:continue
++            rect=cv2.minAreaRect(pts[::max(1,len(pts)//1300)].astype('float32'))
++            if max(rect[1])<.078:continue
++            axes=cv2.boxPoints(rect);v=axes[1]-axes[0]
++            a=np.arctan2(v[1],v[0])
++            if self.heading is None:
++                if j not in headings:
++                    continue
++                a=headings[j]
++            a=yaw+((a-yaw+np.pi/4)%(np.pi/2)-np.pi/4)
++            clouds.append((pts,a))
++        if self.heading is None:
++            if not clouds:return
++            candidates=[(pts,a) for pts,a in clouds if np.linalg.norm(np.median(pts,axis=0))<1.60 and abs(wrap(a-yaw))<.70]
++            if not candidates:return
++            pts,self.heading=min(candidates,key=lambda c:np.linalg.norm(np.median(c[0],axis=0)))
++        basis=rot(self.heading)
++        odom=tracked.xy@rot(origin_yaw).T@basis
++        dt=0. if self.last_time is None else max(0.,frame.time-self.last_time)
++        delta=np.zeros(2) if self.last_odom is None else odom-self.last_odom
++        if dt and (not tracked.odometry.accepted or np.linalg.norm(delta)>dt*.7):
++            delta=self.velocity*dt
++        last_anchor=self.leg_anchor
++        with self.leg_lock:
++            self.leg_anchor=self.legs.at(frame.time)
++        if last_anchor is not None and self.leg_anchor is not None:
++            delta=(self.leg_anchor-last_anchor)@basis
++        old=self.pos.copy();self.pos+=delta
++        self.last_odom=odom;self.last_time=frame.time
++        measured=[]
++        lens=(camera.position32@attitude.T)[:2]@basis
++        for pts,a in clouds:
++            p=pts@basis
++            lo,hi=np.percentile(p,[1,99],axis=0)
++            if np.any(hi-lo>.255):continue
++            # A square gives its longitudinal center directly from a front face.
++            # Use the toe-facing lateral side when the outline is clipped.
++            center=(lo+hi)/2
++            center[0]=lo[0]+.10
++            if hi[1]-lo[1]<.17:
++                center[1]=lo[1]+.10 if center[1]>lens[1] else hi[1]-.10
++            measured.append(center)
++        hits=[];new=[]
++        for rel in measured:
++            p=self.pos+rel
++            errors=[np.linalg.norm(b-p) for b in self.boxes]
++            if errors and min(errors)<.24:
++                i=int(np.argmin(errors));hits.append((i,rel,self.boxes[i]-p))
++            elif not self.boxes or rel[0]>.40:
++                new.append(rel)
++        # Use only measured vertical face normals. A clipped top or a visible
++        # rear slat is not a measurement of the near face of the cube.
++        depth_points=level.copy()
++        depth_points[...,:2]=level[...,:2]@basis
++        step=2
++        ddx=depth_points[step:-step,2*step:]-depth_points[step:-step,:-2*step]
++        ddy=depth_points[2*step:,step:-step]-depth_points[:-2*step,step:-step]
++        norm=np.cross(ddx,ddy); mag=np.linalg.norm(norm,axis=2)
++        norm=norm/np.maximum(mag[...,None],1e-12)
++        wall=keep[step:-step,step:-step]&(height[step:-step,step:-step]<.365)
++        xy=depth_points[step:-step,step:-step,:2]
++        floor_mask=(np.isfinite(height)&(abs(height)<.035)).astype(np.uint8)
++        rim_mask=(height>.365)&(height<.44)&cv2.dilate(floor_mask,np.ones((5,5),np.uint8)).astype(bool)
++        rim=depth_points[rim_mask,:2]
++        self.corrections=[]
++        for axis in range(2):
++            surf=xy[wall&(abs(norm[...,axis])>.91)]
++            err=[]
++            for box in self.boxes:
++                predicted=box-self.pos
++                face=predicted[axis]+np.sign(lens[axis]-predicted[axis])*.1
++                dist=surf[:,axis]-face
++                match=(abs(dist)<.075)&(abs(surf[:,1-axis]-predicted[1-axis])<.13)
++                vals=dist[match]
++                if len(vals)<12:continue
++                bins=np.round(vals/.004).astype(int)
++                modal=np.argmax(np.bincount(bins+20))-20
++                near=vals[abs(vals-.004*modal)<.008]
++                if len(near)>=10:err.append(float(np.median(near)))
++            if not err:
++                # At close range the head sees the top outline after losing
++                # the front wall. A rim touching observed floor supplies an
++                # independent metric edge even during a lateral crossing.
++                for box in self.boxes:
++                    predicted=box-self.pos
++                    for sign in (-1.,1.):
++                        face=predicted[axis]+sign*.1
++                        dist=rim[:,axis]-face
++                        ids=(abs(dist)<.052)&(abs(rim[:,1-axis]-predicted[1-axis])<.106)
++                        ds=dist[ids]
++                        if len(ds)<9:continue
++                        bins=np.rint(ds/.003).astype(int)+20
++                        peak=(np.argmax(np.bincount(bins))-20)*.003
++                        on=abs(ds-peak)<.007
++                        if on.sum()>=9 and np.ptp(rim[ids,1-axis][on])>.046:
++                            err.append(float(np.median(ds[on])))
++            if err:self.pos[axis]-=np.clip(np.median(err),-.018,.018)*.58
++            self.corrections.append(err)
++        if self.track_mid is not None and plane.valid:
++            rgb=frame.rgb
++            white=(abs(height)<.02)&(rgb.min(axis=2)>115)&(rgb.max(axis=2)-rgb.min(axis=2)<.15*rgb.max(axis=2))
++            floor=depth_points[white,:2]
++            center=self.track_mid-self.pos[1]
++            line_err=[]
++            for v in (center-.25,center+.25):
++                pick=floor[(abs(floor[:,1]-v)<.065)&(floor[:,0]<1.1)&(floor[:,0]>.22)]
++                if len(pick)>15 and np.ptp(pick[:,0])>.18:
++                    # Exclude the start of a curve and transverse tape.
++                    fit=np.polyfit(pick[:,0],pick[:,1],1)
++                    if abs(fit[0])<.045 and np.percentile(abs(pick[:,1]-v-np.median(pick[:,1]-v)),85)<.018:
++                        line_err.append(np.median(pick[:,1]-v))
++            if line_err:self.pos[1]-=.55*np.clip(np.median(line_err),-.018,.018)
++        self.visible=[]
++        for i,rel,_ in hits:self.visible.append(i)
++        for rel in sorted(new,key=lambda p:p[0]):
++            p=self.pos+rel
++            if self.boxes and min(np.linalg.norm(b-p) for b in self.boxes)<.23:continue
++            if self.boxes and p[0]<self.boxes[0][0]-.26 and self.index==0 and self.phase in ('enter','along'):
++                self.boxes.insert(0,p);self.side=0;continue
++            if self.boxes and p[0]<self.boxes[-1][0]+.26:continue
++            self.boxes.append(p);self.visible.append(len(self.boxes)-1)
++        if not self.boxes:self.heading=None;return
++        if self.track_mid is None and len(self.boxes)>1:
++            self.track_mid=(self.boxes[0][1]+self.boxes[1][1])/2
++        if not self.side or (self.index==0 and self.phase in ('enter','along')):
++            if len(self.boxes)>1:
++                self.side=np.sign(self.boxes[1][1]-self.boxes[0][1])
++            elif lane is not None:
++                p=(self.boxes[0]-self.pos)@basis.T@rot(yaw)
++                self.side=np.sign(np.polyval(lane,p[0])-p[1])
++        if dt:
++            v=(self.pos-old)/dt
++            self.velocity=.56*self.velocity+.44*np.clip(v,-.50,.50)
++            self.travel+=np.linalg.norm(self.pos-old)
++        if self.index==0 and self.travel<.08 and self.last_cmd[0]>.06 and abs(self.last_cmd[1])<.16:
++            self.stationary+=dt
++            if self.stationary>.5:
++                self.kick_until=frame.time+.45;self.stationary=-.65
++
++        # The real publisher runs concurrently with RGB-D processing. Publish
++        # a complete capture result by one reference assignment; its arrays
++        # are independent of the mutable next-frame tracker.
++        self.pending_frame=BoxFrame(self.pos.copy(),self.velocity.copy(),tuple(self.boxes),self.heading,
++                            self.side,self.last_time,self.leg_anchor,self.kick_until)
++
++    def commit_frame(self):
++        if self.pending_frame is not None:
++            with self.control_lock:
++                self.frame,self.pending_frame=self.pending_frame,None
++
++    def update_legs(self,t,positions,attitude):
++        with self.leg_lock:
++            accepted=self.legs.update(t,positions,attitude)
++            if accepted:
++                self.latest_leg=(t,self.legs.xy.copy(),self.legs.velocity.copy())
++            return accepted
++
++    def command(self,t,yaw):
++        with self.control_lock:
++            return self._command(t,yaw,self.frame)
++
++    def publication(self,frame,deadline):
++        """Bind the box measurements and their expiry to this published plan."""
++        def velocity(stamp,planned,attitude):
++            if stamp>=deadline:
++                return np.zeros(3)
++            if not self.control_lock.acquire(blocking=False):
++                return planned
++            try:
++                # A planning thread may already have advanced to its next
++                # observation. Never advance that plan using this older frame.
++                if self.frame is not frame:
++                    return planned
++                yaw=np.arctan2(attitude[1,0],attitude[0,0])
++                guided=self._command(stamp,yaw,frame)
++                return planned if guided is None else guided
++            finally:
++                self.control_lock.release()
++        return velocity
++
++    def _command(self,t,yaw,frame):
++        if frame is None or not frame.centers or not frame.side or self.done or self.index>=len(frame.centers):return None
++        i=self.index
++        center=frame.centers[i]
++        leg=self.latest_leg
++        vel=frame.velocity
++        if frame.leg_anchor is not None and leg is not None and 0<=t-leg[0]<=.10:
++            basis=rot(frame.heading)
++            vel=leg[2]@basis
++            pos=frame.position+(leg[1]-frame.leg_anchor)@basis+vel*(t-leg[0])
++        else:
++            pos=frame.position+frame.velocity*min(.30,max(0.,t-frame.stamp))
++        side=frame.side*(-1 if i%2 else 1)
++        y=center[1]+side*.42
++        if i+1<len(frame.centers):
++            gate=(center[0]+frame.centers[i+1][0])/2-.029
++        else:
++            gate=center[0]+.38
++        if self.phase=='enter':
++            target_x=center[0]-.36
++        elif self.phase=='along':
++            target_x=gate
++        elif self.phase=='lane_entry':
++            target_x=gate+.04
++            y=.5*(frame.centers[-2][1]+frame.centers[-1][1])
++        else:
++            y=frame.centers[i+1][1]-side*.42
++            # As the torso moves across the lane, the trailing outside foot
++            # approaches the previous crate. Advance through the midpoint
++            # gradually after the leading arm has crossed the next crate.
++            total=abs(y-(center[1]+side*.42))
++            fraction=np.clip(1.-abs(y-pos[1])/total,0.,1.)
++            target_x=gate+.063*np.clip((fraction-.15)/.58,0.,1.)
++        dx=target_x-pos[0];lateral=y-pos[1]
++        vx0,vy0=vel
++        ahead=dx-.55*vx0
++        across=lateral-.33*vy0
++        vx=np.clip(1.7*ahead,-.18,.22)
++        vy=np.clip(2.3*across,-.26,.26)
++        if self.phase in ('shift','lane_entry'):
++            vx=np.clip(3*(dx-.39*vx0)-.075*min(1.,abs(vy)/.15),-.20,.13)
++        elif abs(ahead)<.020:vx=0.
++        if self.phase=='along' and abs(vy)<.035 and 0.<vx<.15 and dx<.12:
++            # The stock velocity adapter otherwise rounds every positive
++            # straight request up to .20. Govern the final pulse explicitly.
++            elapsed_us=round((t-self.along_started)*1_000_000)
++            pulse_on=elapsed_us%300_000<105_000
++            vx=.20 if dx>.055 and ahead>.045 and pulse_on else 0.
++        self.target=[float(target_x),float(y)];self.error=[float(dx),float(lateral)]
++        if self.phase=='enter' and abs(lateral)<.035 and dx<.065:
++            self.phase='along'
++            self.along_started=t
++        if self.phase=='along' and abs(dx)<.040 and abs(vx0)<.09:
++            if i+1<len(frame.centers):self.phase='shift'
++            elif len(frame.centers)>=3:
++                self.phase='lane_entry';return self.last_cmd.copy()
++        elif self.phase=='shift' and abs(lateral)<.035 and abs(vy0)<.11:
++            self.phase='along'
++            self.along_started=t
++            self.index+=1
++        if self.phase=='lane_entry' and abs(lateral)<.04 and abs(vy0)<.10 and pos[0]>center[0]+.30:
++            self.done=True;return None
++        heading_error=wrap(frame.heading-yaw)
++        body=np.array([vx,vy])@rot(frame.heading).T@rot(yaw)
++        w=np.clip(2.4*heading_error,-.5,.5)
++        if t<frame.kick_until and abs(w)<.20:w=.23
++        self.last_cmd=np.r_[body,w]
++        return self.last_cmd.copy()
++
++    def diagnostic(self):
++        return dict(crate_phase=self.phase,crate_index=self.index,crate_side=float(self.side),
++                    crate_pose=self.pos.tolist(),crate_velocity=self.velocity.tolist(),crate_heading=self.heading,
++                    crate_centers=[v.tolist() for v in self.boxes],crate_visible=self.visible,
++                    crate_residuals=self.corrections,crate_target=self.target,crate_error=self.error,crate_done=self.done)
+diff --git a/navigation/leg_odometry.py b/navigation/leg_odometry.py
+new file mode 100644
+index 0000000..fdaf83e
+--- /dev/null
++++ b/navigation/leg_odometry.py
+@@ -0,0 +1,118 @@
++"""Short-range Pi Plus Pro support-foot odometry from leg encoders and AHRS.
++
++All estimates are relative to the first accepted sample, in AHRS horizontal
++axes. Box or lane observations should anchor this local displacement because
++foot slip is unobservable here. No simulator or ROS dependency.
++"""
++from collections import deque
++import math
++import numpy as np
++
++LEG_JOINTS = tuple(f'{side}_{joint}_joint' for side in ('l','r')
++                   for joint in ('hip_pitch','hip_roll','thigh','calf','ankle_pitch','ankle_roll'))
++
++# PiPlusPro_SF_12L8A0G2H0W_Z_261010 URDF leg origins and revolute axes.
++_AXES = (1,0,2,1,1,0)
++_ORIGINS = np.array([[0,.0474,-.0435],[0,.0341,0],[-.00035,0,-.0924],
++                     [0,0,-.05],[0,0,-.14],[.051,0,0]])
++# CAD soles have four parallel horizontal capsules of radius 10 mm. In the
++# ankle-roll frame their center lines are 40 mm below the ankle.
++def _sole_points(side):
++    middle = (.077,.0765) if side=='l' else (.0765,.077)
++    strips = zip((-.017,-.0272,-.0272,-.017),(-.025,-.009,.009,.025),(.065,*middle,.065))
++    return np.array([(cx+dx,cy,-.04) for cx,cy,h in strips for dx in (-h,h)])
++
++_SOLES = [_sole_points(side) for side in ('l','r')]
++
++
++def _rotation(axis, angle):
++    c, s = math.cos(angle), math.sin(angle)
++    if axis==0: return np.array(((1,0,0),(0,c,-s),(0,s,c)))
++    if axis==1: return np.array(((c,0,s),(0,1,0),(-s,0,c)))
++    return np.array(((c,-s,0),(s,c,0),(0,0,1)))
++
++
++def _feet(q, attitude):
++    points=[]; rotations=[]
++    for side in range(2):
++        orient=attitude
++        pos=np.zeros(3)
++        for i,(axis,xyz) in enumerate(zip(_AXES,_ORIGINS)):
++            if side and xyz[1]: xyz=xyz*np.array([1.,-1.,1.])
++            pos+=orient@xyz
++            orient=orient@_rotation(axis,q[side*6+i])
++        points.append(_SOLES[side]@orient.T+pos)
++        rotations.append(orient)
++    return np.array(points),np.array(rotations)
++
++
++class ProLegOdometry:
++    def __init__(self):
++        self.xy=np.zeros(2)
++        self.velocity=np.zeros(2)
++        self.stance_velocity=np.zeros(2)
++        self.last_stance=None
++        self._previous=None
++        self.last_time=None
++        self.samples=deque(maxlen=128)
++        self.segment=0
++
++    def update(self,t,positions,world_from_body):
++        """Consume one complete synchronised leg JointState and AHRS rotation.
++
++        positions maps each LEG_JOINTS name to its raw angle in radians. Submit
++        each unique encoder timestamp once, using its closest measured attitude.
++        """
++        if self.last_time is not None and t<=self.last_time: return False
++        try: q=np.array([positions[n] for n in LEG_JOINTS],dtype=float)
++        except (KeyError,TypeError,ValueError): return False
++        rot=np.asarray(world_from_body,dtype=float)
++        if (not np.isfinite(t) or not np.isfinite(q).all() or rot.shape!=(3,3)
++                or not np.isfinite(rot).all() or np.max(abs(rot.T@rot-np.eye(3)))>.02):
++            return False
++        points,rots=_feet(q,rot)
++        dt=None if self.last_time is None else t-self.last_time
++        if self._previous is not None and dt<=.13:
++            previous,old_rot=self._previous
++            # Choose the lowest foot across both endpoints, then the same
++            # contacting sole material point at both timestamps. Integrating
++            # ankle motion itself would count foot roll as trunk translation.
++            z=(previous[:,:,2]+points[:,:,2])*.5
++            side=int(np.argmin(z.min(axis=1)))
++            point=int(np.argmin(z[side]))
++            down=-.005*(old_rot[side,2]+rots[side,2])
++            delta=(previous[side,point]-points[side,point]+(old_rot[side]-rots[side])@down)[:2]
++            # Ground compliance and touchdown slip cause a jump precisely
++            # when the feet exchange support. Bridge this short interval with
++            # the last firmly planted foot velocity until the new one settles.
++            gap0=previous[1-side,:,2].min()-previous[side,:,2].min()
++            gap1=points[1-side,:,2].min()-points[side,:,2].min()
++            bridging=(min(gap0,gap1)<.003 and self.last_stance is not None
++                      and t-self.last_stance<.12 and np.linalg.norm(self.stance_velocity)>.06)
++            if bridging:
++                delta=self.stance_velocity*dt
++            else:
++                self.stance_velocity=delta/dt
++                self.last_stance=t
++            if np.linalg.norm(delta)<1.5*dt+.005:
++                self.xy+=delta
++                blend=1.-math.exp(-dt/.14)
++                self.velocity+=blend*(delta/dt-self.velocity)
++        else:
++            self.samples.clear();self.velocity.fill(0.);self.segment+=1
++        self._previous=(points,rots);self.last_time=t
++        self.samples.append((t,self.xy.copy()))
++        return True
++
++    def at(self,t,max_age=.10):
++        """Return interpolated XY at image capture, or None across a data gap."""
++        if not self.samples or t<self.samples[0][0]-max_age or t>self.last_time+max_age:
++            return None
++        if t<=self.samples[0][0]: return self.samples[0][1].copy()
++        if t>=self.last_time: return self.xy.copy()
++        for i in range(len(self.samples)-1,0,-1):
++            t0,a=self.samples[i-1]
++            if t0<=t:
++                t1,b=self.samples[i]
++                return a+(b-a)*((t-t0)/(t1-t0))
++        return None
+diff --git a/navigation/runtime.py b/navigation/runtime.py
+index 0f127f5..da8e8db 100644
+--- a/navigation/runtime.py
++++ b/navigation/runtime.py
+@@ -1,6 +1,6 @@
+ """Identical sensor-to-command pipeline for simulation, replay and ROS.
+ 
+-All positions are estimated from RGB-D. Attitude is world_from_body from an
++Positions are estimated from RGB-D and leg encoders between captures. Attitude is world_from_body from an
+ AHRS measurement. No world position or simulator object data is accepted.
+ """
+ from concurrent.futures import ThreadPoolExecutor
+@@ -10,6 +10,7 @@ from pathlib import Path
+ 
+ import numpy as np
+ 
++from navigation.box_servo import BoxServo
+ from navigation.command import AMPCommandAdapter
+ from navigation.environment import verify_dependencies
+ from navigation.floor_map import FloorMap
+@@ -365,6 +366,8 @@ class OnboardNavigation:
+     back to the camera loop. No mutable tracker data are read while the worker runs.
+     """
+     def __init__(self, width, height, intrinsics, position, rotation, speed, observation_lease):
++        self.crates=BoxServo()
++        self._box_publication=None
+         self.tracked = NavigationRuntime(width, height, intrinsics, position, rotation, speed, observation_lease)
+         self.local = CameraPerception(width, height, 80., position, rotation, intrinsics)
+         self.worker = ThreadPoolExecutor(max_workers=1)
+@@ -384,6 +387,7 @@ class OnboardNavigation:
+         self.last_frame_time = self.lane_time = self.lane_yaw = None
+         self.scene = 'unknown_depth'
+         self.reference_time = None
++        self.edge_correction = None
+         self.inside_lane_start = True
+         self.lane = self.support = None
+         self.steering_heading = None
+@@ -400,6 +404,16 @@ class OnboardNavigation:
+         self.last_drive = np.zeros(2)
+         self.reason = 'initializing'
+ 
++    def publish_velocity(self,t,planned,attitude):
++        hook=self.freeze_publish_velocity()
++        return planned if hook is None else hook(t,planned,attitude)
++
++    def freeze_publish_velocity(self):
++        return self._box_publication
++
++    def update_legs(self, stamp, joints, attitude):
++        return self.crates.update_legs(stamp,joints,attitude)
++
+     def set_attitude(self, timestamp, rotation):
+         NavigationRuntime._rotation(rotation)
+         if not np.isfinite(timestamp) or (self.last_imu_time is not None and timestamp<self.last_imu_time):
+@@ -492,6 +506,28 @@ class OnboardNavigation:
+                     reference = np.polyfit(points[:,0], points[:,1], 2)
+         observation, self.scene = self.local.inspect_lane(
+             frame, attitude, reference, inside_start=self.inside_lane_start)
++        # A running Pro can drift off the inside of a bend while its depth
++        # coverage falls short of the full straight-ahead band. The two
++        # independently measured floor tapes still specify a direction back
++        # toward the lane. Correct only sizeable observed offsets.
++        previous_correction = self.edge_correction
++        if (previous_correction is None or frame.time-previous_correction[0]>.85 or
++                self.box_latched or self.unconfirmed_sites or self.scene=='raised_object'):
++            self.edge_correction = None
++        if (not self.box_latched and not self.unconfirmed_sites and
++                self.local.lane_basis=='paired_edges' and observation.lane_observed and
++                self.scene in ('clear','turn_clear','unknown_depth') and self.local.ground.result.valid):
++            curve=observation.lane
++            near,far=observation.lane_support
++            slope=np.polyval(np.polyder(curve), np.clip(.40,near,far))
++            side=curve[-1]/np.hypot(1.,curve[-2])
++            trigger=.13 if previous_correction is not None else .22
++            if abs(side)>trigger and abs(side)<.65:
++                self.edge_correction=(frame.time,capture_yaw,np.arctan(slope),side)
++                self.lane, self.support = curve.copy(), observation.lane_support
++                self.reference_time, self.lane_yaw = frame.time, capture_yaw
++            else:
++                self.edge_correction=None
+         image_ok = np.count_nonzero((frame.rgb.max(axis=2)>5)&(frame.rgb.min(axis=2)<250))>=frame.depth.size*.01
+         if not image_ok:
+             self.scene = 'unusable_rgb'
+@@ -555,6 +591,11 @@ class OnboardNavigation:
+                 self.map_offer = offer
+             else:
+                 self.pending = self.worker.submit(self._track, *offer)
++        self.crates.observe(frame,attitude,self.local,self.tracked,self.initial_yaw,observation.lane)
++        if self.crates.done:
++            self.tracking_control=False
++            self.box_latched=self.saw_box=False
++            self.unconfirmed_sites.clear()
+         if self.tracking_control:
+             self.lane_time = None
+             return self.tracked.observation
+@@ -598,6 +639,28 @@ class OnboardNavigation:
+             self.reason = 'lost_vision'
+         else:
+             self.reason = 'ready'
++        self.crates.commit_frame()
++        guided=self.crates.command(timestamp,self.yaw)
++        self._box_publication=None
++        if guided is not None:
++            frame=self.crates.frame
++            self.deadline=min(self.deadline,frame.stamp+self.lease)
++            self._box_publication=self.crates.publication(frame,self.deadline)
++            self.desired=guided
++            self.lane_turn.pause(timestamp)
++            self.reason='box_'+self.crates.phase
++            return self.adapter.update(self.desired,enabled=True)
++        if (enabled and self.reason not in ('stale_imu', 'stale_camera', 'unusable_rgb') and
++                not self.tracking_control and self.edge_correction is not None and
++                0. <= timestamp - self.edge_correction[0] <= .85):
++            _, observation_yaw, heading, side = self.edge_correction
++            rotation_error=(observation_yaw+heading-self.yaw+np.pi)%(2*np.pi)-np.pi
++            self.desired[:]=[min(self.speed,.18),np.clip(1.6*side,-.23,.23),
++                             np.clip(2.4*rotation_error,-.72,.72)]
++            self.last_drive=self.desired[:2].copy()
++            self.lane_turn.pause(timestamp)
++            self.reason='return_to_observed_lane'
++            return self.adapter.update(self.desired,enabled=True)
+         if self.tracking_control:
+             self.turning_to_lane = False
+             r = self.tracked
+@@ -672,6 +735,11 @@ class OnboardNavigation:
+             self.last_drive = self.desired[:2].copy()
+         elif np.any(self.last_drive):
+             self.desired[:2] = self.last_drive
++        if getattr(self,'launch_stamp',None) is None and self.desired[0]>=.12:
++            self.launch_stamp=timestamp
++            self.launch_direction=-1 if self.desired[2]<0 else 1
++        if self.desired[0]>.10 and timestamp-getattr(self,'launch_stamp',-100.)<.70:
++            self.desired[:]=[.22,0.,.24*self.launch_direction]
+         return self.adapter.update(self.desired, enabled=True)
+ 
+     def diagnostic(self):
+@@ -683,4 +751,5 @@ class OnboardNavigation:
+                      turn_no_response=self.lane_turn.no_response, pending_raised_cells=len(self.unconfirmed_sites),
+                      clearance_frames=self.clear_frames, lane_ground_reason=self.local.ground.result.reason,
+                      target_policy_velocity=self.adapter.target.tolist())
++        state.update(self.crates.diagnostic())
+         return state
+diff --git a/release_manifest.json b/release_manifest.json
+index 4fb2b56..bfe01c6 100644
+--- a/release_manifest.json
++++ b/release_manifest.json
+@@ -1,11 +1,10 @@
+ {
+-  "release_id": "shared_nav_20261111_rt10",
++  "release_id": "shared_nav_20261111_rt11",
+   "python": ">=3.8",
+   "navigation_core_sha256": {
+-    "._runtime.py": "44c8a7d6a73254bcf8ff09dbb598e41d1dadd362e6ac35d3650e4a1eb8aeef61",
+-    "._visual.py": "44c8a7d6a73254bcf8ff09dbb598e41d1dadd362e6ac35d3650e4a1eb8aeef61",
+     "__init__.py": "5116b22a589575c6b9f55158ece82507574c441351a8d7e32ca1d964f8107380",
+     "amp_contract.json": "d128ef7d1c039901d80ccc6d522d83cada396970b9ee4612ff330d4c38aac76b",
++    "box_servo.py": "573def60b3796dc6dcb64326839638b739e320e3fdf81fa763457e64a462c624",
+     "calibration.py": "42f46aded85643151027eadd3b6cbf1a8d53c446fd473787180d0bf57f072f48",
+     "command.py": "f9704718503c19da9a95d6d6052325db6bd68593858151d609bdcb5a2b79f734",
+     "dependencies.json": "ab15eb730632c982638ec9c26863037d8720b5df22eb7590d6434342750fd599",
+@@ -14,9 +13,10 @@
+     "floor_odometry.py": "daab1e70d5929162aeed90daa91137379914249af7c24615b77a524b43919708",
+     "gap_controller.py": "3232ba0e264abdf3a2359c9b20b46f5e4e22f75ec09de07b2669b6a6c67cfb74",
+     "ground.py": "b8b68500422a6a150c4b129172bf427ab39590d12cc4c9918c7095aeb655e81e",
++    "leg_odometry.py": "02ef5eae50b97b2a00cafc35df2d5cf4bcadb757bd93116ff9361fedc66ce24d",
+     "motion_recovery.py": "fa27ad9e49b8debd593b6ddc6a323210bf320d443f8397a92a940cccf0a83891",
+     "release.py": "ac116e4a0d232f356f5b40195648894875297523b6da850ff5ca6f9bb0a68899",
+-    "runtime.py": "e70999fea7dbb49a8c44f6b8884b2644c5f52b93a91300e6841b1ac6d217df2d",
++    "runtime.py": "c360327208c329517dd3d7ea1e248c44b671ad63530b8c07a64a00165326ca76",
+     "surface_odometry.py": "b0e62674eaf9f565512c92464b305a5904c017b2e9ddf9c2de46e145fde02031",
+     "visual.py": "41e48d71cb66716237b9af8d7578408f0dd4ee931e2184045caf087fcab22428"
+   },
+@@ -55,6 +55,8 @@
+     "controller_binary_sha256": "e17157bc2ade8a0342b18aad74979e37df1a22c97d169f7ed77416c67f27985d"
+   },
+   "files": {
++    "SHARED_NAVIGATION_STATUS.md": "d2a367de7fbe51f198147cc1a9a7c5f8c655674133844849eb3bb607d699e37b",
++    "deploy/NOSTOP.md": "50f2f895b43f1c459a0717361a6721cd202acfa7f225a497fe467ae5394d106a",
+     "deploy/README.md": "07a2d6fc746c138c021d457be8bdab0a16b442ff421fe586f7634dbf544feb4e",
+     "deploy/SHARED_NAVIGATION.md": "3fb98446345e044783de6bffecd8227d1d495da6c163048d1618610c7e1961e3",
+     "deploy/calibrate_ground.py": "e62583349e2e80a65a542e7c9947ac1c830b92c35ad732ff70f35c7830937044",
+@@ -67,6 +69,7 @@
+     "deploy/launch_line_trial.py": "7cd1616047462ac76c05f8290ba06ae7b4ae7847f1ad69d3693e2467edc329a4",
+     "deploy/line_follow_core.py": "3cc5fc28b97302636e2760bb8d33436006e26a31cd49847ace43d1d0a3a8cb38",
+     "deploy/line_trial.py": "9e9695a270bcc26dfbd4024fa2758fa95d792c09691c87d57bb6924d48581fc8",
++    "deploy/nav": "0642af455503366fdb684ed0300e316ac86fa3c425fc8064ec425f7097fa2a15",
+     "deploy/navigation_buttons.py": "d103b1133b810ccee63e3df261754162cb038952e74c51c6f73e06df07c17a79",
+     "deploy/navigation_cli.py": "9f96e41fdb123b104bd0787dce02a8e33deb169b2d172c09b7b079697c21c67d",
+     "deploy/preview_camera.py": "b4c7f0a4fc1c0ff53b969ef3f9a463b4b1c830852ce264cc6665faa14aaf3f02",
+@@ -78,11 +81,13 @@
+     "deploy/reset_camera.cpp": "63abaa0853ecdcfe4658c9da51f79df63d95049aa7b3d5a6370cab8d84c18808",
+     "deploy/run_navigation_buttons.sh": "8327022110a897d02ad6364c6be352cbbf94d0624ef2300f3a98fb58faae5b64",
+     "deploy/run_shadow.sh": "cf3ae734c5a44d2e6f6560f9db682f5d19a0ed63c0416c86976492019b4f6fd9",
+-    "deploy/shadow.py": "6153d6200c232e466a9d0478c1894ce73367dde738b305fa80f1ddcaad8f448f",
+-    "deploy/shared_navigation.py": "ddac796deaa0f381d2422b3caba3c7816f0736706eaac70d712feb03a95cfafc",
++    "deploy/shadow.py": "e4dd5d1ee718cded07baa9f5fc62a7244fc1a5f94a8046ab14e2b1585e05e58b",
++    "deploy/shared_navigation.py": "12be63284cf2d03493df7f5e63e09a35489ae42fcf638c9b4811124a505ae8fd",
++    "deploy/stop_archive.py": "a998f12c45fe5a68796202cb34b7de540bc2d0858d0bd8416c3ff2d4308b8cde",
+     "deploy/task_head_pose.json": "fe2f430b11a1bed540fb046415886082213fe231342ebd05f62a6910c44bbc6f",
+     "navigation/__init__.py": "5116b22a589575c6b9f55158ece82507574c441351a8d7e32ca1d964f8107380",
+     "navigation/amp_contract.json": "d128ef7d1c039901d80ccc6d522d83cada396970b9ee4612ff330d4c38aac76b",
++    "navigation/box_servo.py": "573def60b3796dc6dcb64326839638b739e320e3fdf81fa763457e64a462c624",
+     "navigation/calibration.py": "42f46aded85643151027eadd3b6cbf1a8d53c446fd473787180d0bf57f072f48",
+     "navigation/command.py": "f9704718503c19da9a95d6d6052325db6bd68593858151d609bdcb5a2b79f734",
+     "navigation/dependencies.json": "ab15eb730632c982638ec9c26863037d8720b5df22eb7590d6434342750fd599",
+@@ -91,46 +96,48 @@
+     "navigation/floor_odometry.py": "daab1e70d5929162aeed90daa91137379914249af7c24615b77a524b43919708",
+     "navigation/gap_controller.py": "3232ba0e264abdf3a2359c9b20b46f5e4e22f75ec09de07b2669b6a6c67cfb74",
+     "navigation/ground.py": "b8b68500422a6a150c4b129172bf427ab39590d12cc4c9918c7095aeb655e81e",
++    "navigation/leg_odometry.py": "02ef5eae50b97b2a00cafc35df2d5cf4bcadb757bd93116ff9361fedc66ce24d",
+     "navigation/motion_recovery.py": "fa27ad9e49b8debd593b6ddc6a323210bf320d443f8397a92a940cccf0a83891",
+     "navigation/release.py": "ac116e4a0d232f356f5b40195648894875297523b6da850ff5ca6f9bb0a68899",
+-    "navigation/runtime.py": "e70999fea7dbb49a8c44f6b8884b2644c5f52b93a91300e6841b1ac6d217df2d",
++    "navigation/runtime.py": "c360327208c329517dd3d7ea1e248c44b671ad63530b8c07a64a00165326ca76",
+     "navigation/surface_odometry.py": "b0e62674eaf9f565512c92464b305a5904c017b2e9ddf9c2de46e145fde02031",
+     "navigation/visual.py": "41e48d71cb66716237b9af8d7578408f0dd4ee931e2184045caf087fcab22428",
+-    "deploy/nav": "0642af455503366fdb684ed0300e316ac86fa3c425fc8064ec425f7097fa2a15",
+-    "sim/pro_camera_mount.json": "026b1cf918a8976d16306117c86fcd4149b440911406b48620662db9301e038a",
+-    "scripts/test_model_calibration.py": "66148323e0ed58966861816a8261d93d6280cd7929d873e46b0125528e00e03e",
+-    "vendor/pi_plus_pro/amp.yaml": "a31a6dd7b9b77aca9d73f93f812897cb64cdb7f97217bda11d61b4a0c85ed10b",
+-    "vendor/pi_plus_pro/amp.trt": "49a64fc175dc9719554e246d42e2ccc0fa4dda97f672a66076a9e02dd8b97c13",
+-    "vendor/pi_plus_pro/pd.yaml": "fa0f04a3b49d72ac0825a6cfeb523e34ecf1aa68477bd49e8042d3256c7b11a0",
+-    "scripts/test_line_supervisor.py": "00c441bb8130b11ccfdc64bde800964bc04580e2e3db90a9bb02da598b0770dc",
+-    "scripts/test_navigation_cli.py": "a4870ebb8c66094d02dd97d603ffc8658c3d832f7f4923ae98676470d6f4a1fd",
+-    "sim/visual_navigation.py": "b18df8c76a6793738461fa6ee4d3b7618178d907a0d698cb844d5df6700cc7aa",
+-    "scripts/test_shared_navigation.py": "d92209f27b25d35d5987292a8d8606db5b28eeeafef237a8f252793589901444",
+-    "scripts/test_navigation_buttons.py": "4d768fe7a413598c2d703553725f0205b8f3d00a826843324e65b42c606c28e0",
+-    "scripts/test_head_restore.py": "35e05a75d331b1313f423a0be2e8f367761c2915ee5bc88ae2d887aee47b39f6",
+-    "scripts/test_head_profile.py": "375c6121d496b8b62445202ee906548188d7e515c083a82622cd8072178cb16f",
+-    "scripts/replay_navigation.py": "4f3a9190241efb5efe1e64e318b724f441a704f21a5f5301ae85b79d1fc4dc85",
+-    "SHARED_NAVIGATION_STATUS.md": "d2a367de7fbe51f198147cc1a9a7c5f8c655674133844849eb3bb607d699e37b",
+-    "sim/d435i_camera.json": "8101734e888174f26a40da41efd8cd728bdec258b281cd4361502d6702998305",
+     "reference/robot/PiPlusPro_SF_12L8A0G2H0W_Z_261010/urdf/PiPlusPro_SF_12L8A0G2H0W_Z_261010.urdf": "5169fe5d59eae117c006232b7512a0e28347383187482c05619487f19831a69c",
++    "scripts/replay_navigation.py": "4f3a9190241efb5efe1e64e318b724f441a704f21a5f5301ae85b79d1fc4dc85",
++    "scripts/test_corridor_feedback.py": "99cda7c612c0d386ae2d8deb58fcd4f4197f2ac8150af320029b360a91f84565",
+     "scripts/test_depth_ground.py": "93e3c5fdc9203eb5c1ae33bed3c8c52ff1d879ed8c8642cfb0aafb240023d1fb",
+-    "scripts/test_ground_color_integration.py": "6d7f5f65fcd870a0b33f3f56250c9aa660dcd02a83091d0cb75027413cf024eb",
+-    "scripts/test_surface_odometry.py": "df34196bf6aaa104e9a83312e195b8b15050cc4d520ce0b08e41bc580dc81007",
+-    "scripts/test_rgbd_odometry.py": "00114e9e00e95a09cf0e83109a72dc793b8b1ea38152acb9dc6320f766e3201f",
++    "scripts/test_floor_map.py": "784d715c084684b97af48c4e32574179986f74e8f53d58ff6259d3cfeabdbd91",
+     "scripts/test_floor_odometry.py": "ce6bbc2ddd01b9e0650f20627bb6480ac6632b2e0330ad0ac628a28bc0668ec2",
+     "scripts/test_floor_projection.py": "1a6ad0d7eedcea9237965fc78a162ebae69ab6d1cc19d44601cd733849691a88",
+-    "scripts/test_floor_map.py": "784d715c084684b97af48c4e32574179986f74e8f53d58ff6259d3cfeabdbd91",
++    "scripts/test_gap_controller.py": "8dd58c3838224e7a2d4b50375c71a64bd771e01b8da9f6ef27e69ea7897a2b3f",
++    "scripts/test_ground_color_integration.py": "6d7f5f65fcd870a0b33f3f56250c9aa660dcd02a83091d0cb75027413cf024eb",
++    "scripts/test_head_profile.py": "375c6121d496b8b62445202ee906548188d7e515c083a82622cd8072178cb16f",
++    "scripts/test_head_restore.py": "35e05a75d331b1313f423a0be2e8f367761c2915ee5bc88ae2d887aee47b39f6",
++    "scripts/test_line_supervisor.py": "00c441bb8130b11ccfdc64bde800964bc04580e2e3db90a9bb02da598b0770dc",
++    "scripts/test_map_relocalization.py": "f6a7c09559540e429a797b907adb02e6a688a675445a0b4337a114999c7839c1",
++    "scripts/test_model_calibration.py": "66148323e0ed58966861816a8261d93d6280cd7929d873e46b0125528e00e03e",
++    "scripts/test_motion_recovery.py": "3479c8de5eb6b2ff3d29f894be7f1683d17aa4642c2899bf2b52c11d87107f51",
++    "scripts/test_navigation_buttons.py": "4d768fe7a413598c2d703553725f0205b8f3d00a826843324e65b42c606c28e0",
++    "scripts/test_navigation_cli.py": "a4870ebb8c66094d02dd97d603ffc8658c3d832f7f4923ae98676470d6f4a1fd",
++    "scripts/test_rgbd_odometry.py": "00114e9e00e95a09cf0e83109a72dc793b8b1ea38152acb9dc6320f766e3201f",
++    "scripts/test_rt11_box_publication.py": "d571ec7b3266bc395adcc07c76c688a20ded000c5488ce7bdd44d34f03a299bb",
++    "scripts/test_rt11_box_visibility.py": "cf7809139d218613cb327ad90f6ff60681fb35774e37bd8af3c3e7a346101596",
+     "scripts/test_sensor_recovery.py": "1405a42934f58e841d0cbe4dfc48e162519bf3f31b9357b801211bc3dd5e022f",
++    "scripts/test_shared_navigation.py": "d92209f27b25d35d5987292a8d8606db5b28eeeafef237a8f252793589901444",
+     "scripts/test_single_boundary.py": "ad15b9263030f9115a2d5a212aa64f706c535daa56bc5f7765b5b5a7ead00214",
+-    "scripts/test_map_relocalization.py": "f6a7c09559540e429a797b907adb02e6a688a675445a0b4337a114999c7839c1",
+-    "scripts/test_gap_controller.py": "8dd58c3838224e7a2d4b50375c71a64bd771e01b8da9f6ef27e69ea7897a2b3f",
++    "scripts/test_surface_odometry.py": "df34196bf6aaa104e9a83312e195b8b15050cc4d520ce0b08e41bc580dc81007",
+     "scripts/test_visual_finish.py": "613efd90da89d9a754c1c0bb26585bfe4c1d465af017eb282f79e06079f1b1a8",
+-    "scripts/test_corridor_feedback.py": "99cda7c612c0d386ae2d8deb58fcd4f4197f2ac8150af320029b360a91f84565",
+-    "scripts/test_motion_recovery.py": "3479c8de5eb6b2ff3d29f894be7f1683d17aa4642c2899bf2b52c11d87107f51",
+-    "deploy/stop_archive.py": "a998f12c45fe5a68796202cb34b7de540bc2d0858d0bd8416c3ff2d4308b8cde",
+-    "deploy/NOSTOP.md": "58ab0cf88a5a366d0075092b5b3ee70c500b947017c012cf524fa92714b47ecc"
++    "sim/d435i_camera.json": "8101734e888174f26a40da41efd8cd728bdec258b281cd4361502d6702998305",
++    "sim/pro_camera_mount.json": "026b1cf918a8976d16306117c86fcd4149b440911406b48620662db9301e038a",
++    "sim/visual_navigation.py": "b18df8c76a6793738461fa6ee4d3b7618178d907a0d698cb844d5df6700cc7aa",
++    "vendor/pi_plus_pro/amp.trt": "49a64fc175dc9719554e246d42e2ccc0fa4dda97f672a66076a9e02dd8b97c13",
++    "vendor/pi_plus_pro/amp.yaml": "a31a6dd7b9b77aca9d73f93f812897cb64cdb7f97217bda11d61b4a0c85ed10b",
++    "vendor/pi_plus_pro/pd.yaml": "fa0f04a3b49d72ac0825a6cfeb523e34ecf1aa68477bd49e8042d3256c7b11a0"
+   },
+   "default_mode": "shadow_without_motor_publishers",
+   "real_motion_requires": "verified camera/IMU calibration, current sensors, immutable AMP identity, sole guarded publisher",
+-  "nostop_policy": "only_300s"
+-}
+\ No newline at end of file
++  "nostop_policy": "Mission duration inherited from rt10; local manoeuvres may request zero velocity.",
++  "parent_release_id": "shared_nav_20261111_rt10",
++  "parent_manifest_sha256": "18e9e2bc53dfd6bba9735b463eb5db353d8e6b752f9c8ec7f030ed526c776fec",
++  "validation_scope": "MuJoCo; derived from measured rt10 camera/guard schedules; no robot motion validation."
++}
+diff --git a/scripts/test_rt11_box_publication.py b/scripts/test_rt11_box_publication.py
+new file mode 100644
+index 0000000..fcbf86d
+--- /dev/null
++++ b/scripts/test_rt11_box_publication.py
+@@ -0,0 +1,95 @@
++"""Exercise a candidate's frozen ROS publication plan without a ROS master."""
++from pathlib import Path
++import sys
++import unittest
++from dataclasses import replace
++
++import numpy as np
++
++sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
++from deploy.shared_navigation import PublishedPlan, TurnCutoff
++from navigation.box_servo import BoxFrame, BoxServo
++
++
++class BoxPublicationTest(unittest.TestCase):
++    def setUp(self):
++        self.nav = BoxServo()
++        self.rotation = np.eye(3)
++        self.vector = (.10, .02, .01)
++        self.imu = (.2, [0., 0., 0., 1.])
++        self.frame = BoxFrame(np.zeros(2), np.zeros(2), (np.array([1., .13]),),
++                              0., 1., 0., None, 0.)
++        self.nav.pending_frame = self.frame
++        self.nav.commit_frame()
++        self.plan = PublishedPlan(vector=self.vector, deadline=1., reason='box_enter',
++                                  box_servo=self.nav.publication(self.frame, 1.))
++
++    def evaluate(self, plan, t, imu):
++        return plan.evaluate(t, imu, self.rotation, TurnCutoff())
++
++    def test_frame_visibility_until_commit(self):
++        next_frame = replace(self.frame, side=-1.)
++        self.nav.pending_frame = next_frame
++        first, *_ = self.evaluate(self.plan, .2, self.imu)
++        self.assertGreater(first[1], 0.)
++        self.nav.commit_frame()
++        self.nav.target = None
++        stale, *_ = self.evaluate(self.plan, .2, self.imu)
++        np.testing.assert_equal(stale, self.vector)
++        self.assertIsNone(self.nav.target)
++        new_plan = replace(self.plan, box_servo=self.nav.publication(next_frame, 1.))
++        new, *_ = self.evaluate(new_plan, .2, self.imu)
++        self.assertLess(new[1], 0.)
++
++    def test_box_expiry_and_missing_imu_stop(self):
++        for t, imu, reason in [(1., (.99, self.imu[1]), 'box_observation_expired'),
++                               (.2, None, 'no_fresh_box_imu'),
++                               (.36, self.imu, 'no_fresh_box_imu')]:
++            vector, actual, fresh = self.evaluate(self.plan, t, imu)
++            np.testing.assert_equal(vector, (0., 0., 0.))
++            self.assertEqual(actual, reason)
++            self.assertFalse(fresh)
++
++    def test_lane_preserves_rt10_command(self):
++        lane = replace(self.plan, reason='ready', box_servo=None)
++        vector, reason, _ = self.evaluate(lane, 8., None)
++        np.testing.assert_equal(vector, self.vector)
++        self.assertEqual(reason, 'ready')
++
++    def test_publisher_uses_completed_sensor_data_without_waiting(self):
++        with self.nav.leg_lock:
++            vector, *_ = self.evaluate(self.plan, .2, self.imu)
++            self.assertGreater(vector[1], 0.)
++        with self.nav.control_lock:
++            vector, *_ = self.evaluate(self.plan, .2, self.imu)
++            np.testing.assert_equal(vector, self.vector)
++
++    def test_along_pulses_follow_phase_time_at_every_clock_origin(self):
++        offsets=(.030, .104, .105, .210, .299, .300, .375, .405)
++        expected=(.2, .2, 0., 0., 0., .2, .2, 0.)
++        for origin in (17.5213, 56231.271, 3285599.063801):
++            nav=BoxServo()
++            frame=replace(self.frame, stamp=origin, position=np.zeros(2),
++                          centers=(np.array([.36,-.42]),))
++            nav.frame=frame
++            nav.command(origin, 0.)
++            self.assertEqual(nav.phase,'along')
++            # The tracker has just measured 7 cm left before the station.
++            nav.frame=replace(frame, position=np.array([.67,0.]))
++            commands=[nav.command(origin+offset,0.)[0] for offset in offsets]
++            np.testing.assert_equal(commands,expected)
++
++            # Advancing to the next box creates a new pulse phase origin.
++            second=origin+4.097
++            nav.phase='shift'
++            nav.frame=replace(frame,centers=(frame.centers[0],np.array([1.,.12])),
++                              position=np.array([.68,-.30]),stamp=second)
++            nav.command(second,0.)
++            self.assertEqual((nav.phase,nav.index),('along',1))
++            nav.frame=replace(nav.frame, position=np.array([1.31,-.30]))
++            commands=[nav.command(second+offset,0.)[0] for offset in offsets]
++            np.testing.assert_equal(commands,expected)
++
++
++if __name__ == '__main__':
++    unittest.main(verbosity=2)
+diff --git a/scripts/test_rt11_box_visibility.py b/scripts/test_rt11_box_visibility.py
+new file mode 100644
+index 0000000..7a91083
+--- /dev/null
++++ b/scripts/test_rt11_box_visibility.py
+@@ -0,0 +1,89 @@
++"""Exercise sensor-loss and lane-handoff behavior of the frozen candidate."""
++import json
++from pathlib import Path
++import sys
++from types import SimpleNamespace
++import unittest
++
++import numpy as np
++
++
++SOURCE=Path(__file__).resolve().parents[1]
++sys.path.insert(0,str(SOURCE))
++from navigation.box_servo import BoxFrame, BoxServo
++from navigation.leg_odometry import LEG_JOINTS
++from navigation.runtime import CameraFrame
++from navigation.visual import CameraPerception
++
++
++class VisibilityTest(unittest.TestCase):
++    def setUp(self):
++        config=json.loads((SOURCE/'deploy/pro_model_config.json').read_text())
++        self.cam=CameraPerception(160,120,60.,config['camera_position_body_m'],
++                                  config['camera_rotation_optical_to_body'])
++        self.rotation=np.eye(3)
++        self.rgb=np.zeros((120,160,3),np.uint8)
++        self.tracker=SimpleNamespace(xy=np.zeros(2),odometry=SimpleNamespace(accepted=False))
++        self.nav=BoxServo()
++        # Marks in a box-relative test map, previously measured by the tracker.
++        self.nav.heading=0.
++        self.nav.boxes=[np.array(v) for v in [(1.,-.12),(1.55,.12),(2.10,-.12)]]
++        self.nav.side=1.
++
++    def observe(self,stamp,depth):
++        frame=CameraFrame(stamp,self.rgb,depth)
++        observation,_=self.cam.inspect_lane(frame,self.rotation)
++        self.nav.observe(frame,self.rotation,self.cam,self.tracker,0.,observation.lane)
++        self.nav.commit_frame()
++
++    def test_floor_only_then_lost_depth(self):
++        directions=self.cam.rays@self.cam.rotation32.T
++        depth=(-.45-self.cam.position32[2])/directions[...,2]
++        depth[(depth<.15)|(depth>4.)]=np.nan
++        self.observe(1.,depth)
++        self.assertTrue(self.cam.ground.result.valid)
++        self.assertEqual(self.nav.visible,[])
++        self.assertEqual(self.nav.frame.stamp,1.)
++        first=self.nav.frame
++        self.observe(1.2,np.full(depth.shape,np.nan))
++        self.assertFalse(self.cam.ground.result.valid)
++        self.assertIs(self.nav.frame,first)
++        hook=self.nav.publication(first,2.)
++        self.assertGreater(np.linalg.norm(hook(1.5,np.zeros(3),self.rotation)),0.)
++        np.testing.assert_equal(hook(2.,np.ones(3),self.rotation),np.zeros(3))
++
++    def test_encoder_outage_uses_frame_velocity(self):
++        frame=BoxFrame(np.zeros(2),np.array([.10,0.]),tuple(self.nav.boxes),0.,1.,1.,np.zeros(2),0.)
++        self.nav.frame=frame
++        self.nav.latest_leg=(1.,np.array([.30,0.]),np.zeros(2))
++        self.nav.command(1.05,0.)
++        self.assertAlmostEqual(self.nav.error[0],1.-.36-.30)
++        self.nav.command(1.4,0.)
++        self.assertAlmostEqual(self.nav.error[0],1.-.36-.10*.30)
++        self.assertGreater(np.linalg.norm(self.nav.last_cmd),0.)
++
++    def test_encoder_restart_does_not_integrate_missing_time(self):
++        joints=dict.fromkeys(LEG_JOINTS,0.)
++        self.assertTrue(self.nav.update_legs(1.,joints,self.rotation))
++        previous=self.nav.latest_leg[1]
++        joints[LEG_JOINTS[0]]=.4
++        self.assertTrue(self.nav.update_legs(1.5,joints,self.rotation))
++        np.testing.assert_equal(self.nav.latest_leg[1],previous)
++        np.testing.assert_equal(self.nav.latest_leg[2],np.zeros(2))
++        self.assertIsNone(self.nav.legs.at(1.2))
++
++    def test_lane_handoff_is_one_shot(self):
++        self.nav.index=2
++        self.nav.phase='lane_entry'
++        self.nav.frame=BoxFrame(np.array([2.53,0.]),np.zeros(2),tuple(self.nav.boxes),
++                                0.,1.,1.,None,0.)
++        self.assertIsNone(self.nav.command(1.,0.))
++        self.assertTrue(self.nav.done)
++        self.assertIsNone(self.nav.command(20.,0.))
++        new_process=BoxServo()
++        self.assertFalse(new_process.done)
++        self.assertEqual(new_process.boxes,[])
++
++
++if __name__=='__main__':
++    unittest.main(verbosity=2)

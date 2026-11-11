@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT))
 
 import mujoco
 import numpy as np
+from sim.field import DEFAULT_BEND, FIELD_DIRS
 from sim.robot import Robot, build_model
 from sim.navigation import Track, Navigator
 from sim.scoring import Referee
@@ -18,6 +19,7 @@ from sim.scoring import Referee
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--bend-profile", choices=FIELD_DIRS, default=DEFAULT_BEND)
     parser.add_argument("--start", choices=["01", "02", "03"], default="01")
     parser.add_argument("--duration", type=float, default=240)
     parser.add_argument("--speed", type=float, default=.25)
@@ -26,19 +28,22 @@ def main():
                         help="full-body permits single-foot overhang; feet-only is the collision-prone comparison")
     parser.add_argument("--viewer", action="store_true")
     parser.add_argument("--video", action="store_true")
-    parser.add_argument("--output", type=Path, default=ROOT / "output/sim/truth")
+    parser.add_argument("--output", type=Path)
     parser.add_argument("--policy", type=Path, help="Explicit legacy .pt override; default is the audited Pro device policy")
     args = parser.parse_args()
     if not 0 < args.speed <= .5 or not 0 < args.duration <= 300:
         parser.error("Require 0 < speed <= 0.5 m/s and 0 < duration <= 300 s")
+    if args.output is None:
+        args.output = ROOT / "output/sim" / ("truth" if args.bend_profile == "smooth" else f"truth_{args.bend_profile}")
     args.output.mkdir(parents=True, exist_ok=True)
-    track = Track()
+    track = Track(args.bend_profile)
     track.plan(no_obstacles=args.no_obstacles, full_body=args.planner == "full-body")
     start = next(s for s in track.config["starts"] if s["id"] == args.start)
     pose = [*start["position"], np.deg2rad(start["yaw_degrees"])]
-    model, xml = build_model(no_obstacles=args.no_obstacles, timestep=.002 if args.policy and args.policy.suffix=='.pt' else .001)
+    legacy = args.policy is not None and args.policy.suffix == '.pt'
+    model, xml = build_model(no_obstacles=args.no_obstacles, timestep=.002 if legacy else .001, legacy=legacy, bend_profile=args.bend_profile)
     (args.output / "scene.xml").write_text(xml)
-    robot = Robot(model, pose, policy=args.policy)
+    robot = Robot(model, pose, policy=args.policy, from_standby=not legacy)
     nav = Navigator(track, pose, speed=args.speed)
     referee = Referee(robot, track)
     viewer, renderer, camera, video = None, None, None, None
@@ -106,7 +111,7 @@ def main():
         if renderer:
             renderer.close()
     summary = {
-        "status": status, "navigation": "ground_truth_lane_lattice", "locomotion": robot.locomotion_metadata(),
+        "bend_profile": args.bend_profile, "status": status, "navigation": "ground_truth_lane_lattice", "locomotion": robot.locomotion_metadata(),
         "start": args.start, "obstacles": not args.no_obstacles,
         "full_body_planning": track.full_body,
         "finish_time_s": finish_time,

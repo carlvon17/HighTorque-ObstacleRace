@@ -1,4 +1,4 @@
-"""Bounded head-pitch-only step through the active manufacturer's ROS interface.
+"""Restore both head joints or probe pitch through the manufacturer's interface.
 
 Never starts controllers, changes modes, publishes body joints or clears faults.
 """
@@ -21,7 +21,7 @@ from deploy.shadow import Sensors
 from deploy.geometry import quaternion_matrix_xyzw
 from deploy.pro_head_model import ProHeadModel
 from deploy.controller_state import factory_state_evidence
-from deploy.head_profile import bounded_absolute_target,smooth_setpoint,validate_body_only_amp
+from deploy.head_profile import saved_head_targets,smooth_setpoint,validate_body_only_amp
 
 
 def bounded_target(current,delta,lower,upper):
@@ -116,24 +116,40 @@ def main():
         upper=min(cfg['upper'][i],model_limits[1])
         if args.restore_saved_pose:
             pose=json.loads((ROOT/'deploy/task_head_pose.json').read_text())
-            if pose.get('schema')!='competition.task_head_pose.v1':raise ValueError('Unexpected saved head pose schema')
-            command=pose['joint_command_reference_rad'];measured=pose['measured_joint_reference_rad']
-            if set(command)!={'head_pitch_joint'}:raise ValueError('Saved command must contain head pitch only')
-            target=bounded_absolute_target(start,float(command['head_pitch_joint']),lower,upper)
-            expected=bounded_absolute_target(start,float(measured['head_pitch_joint']),lower,upper)
-            expected_yaw=float(measured['head_yaw_joint'])
-            if not np.isfinite(expected_yaw) or abs(head['head_yaw_joint'][1]-expected_yaw)>.04:raise ValueError('Yaw differs from saved view; pitch-only restore stopped')
-            # Cubic easing starts/stops at zero speed; peak speed <= 0.1 rad/s.
-            ramp_duration=max(1.,1.5*abs(target-start)/.1)
-            need_motion=abs(start-expected)>.015
-            report.update(action='restore_saved_pose_continuous',expected_feedback_pitch=expected,
+            names=['head_pitch_joint','head_yaw_joint']
+            starts={name:head[name][1] for name in names}
+            limits={}
+            for name in names:
+                index=cfg['joint_names'].index(name)
+                limits[name]=(max(cfg['lower'][index],model.limits[name][0]),
+                              min(cfg['upper'][index],model.limits[name][1]))
+            targets,expected=saved_head_targets(pose,starts,limits)
+            profile_starts=dict(starts)
+            for name in names:
+                if abs(starts[name]-expected[name])<=.015:
+                    # An axis already at its feedback reference keeps the
+                    # saved holding command, including the measured PD bias.
+                    profile_starts[name]=targets[name]
+            # One shared duration synchronizes both cubic trajectories.
+            # Each joint starts/stops at zero speed and peaks at <= 0.1 rad/s.
+            ramp_duration=max(1.,1.5*max(abs(targets[name]-profile_starts[name]) for name in names)/.1)
+            need_motion=any(abs(starts[name]-expected[name])>.015 for name in names)
+            report.update(action='restore_saved_pose_continuous',
+                          expected_feedback_pitch=expected['head_pitch_joint'],
+                          expected_feedback_yaw=expected['head_yaw_joint'],
+                          target_yaw=targets['head_yaw_joint'],head_joint_limits=limits,
+                          profile_start_rad=profile_starts,
                           ramp_duration_s=ramp_duration,maximum_profile_speed_rad_s=.1)
         else:
             target=bounded_target(start,args.delta,lower,upper)
-            expected=target;ramp_duration=1.;need_motion=True
+            names=['head_pitch_joint']
+            starts={'head_pitch_joint':start}
+            targets={'head_pitch_joint':target}
+            expected=dict(targets);ramp_duration=1.;need_motion=True
         initial_body={n:v[1] for n,v in body.items()}
         gravity=quaternion_matrix_xyzw(imu[1]).T@np.array([0.,0.,-1.])
-        report.update(initial_pitch=start,target_pitch=target,initial_yaw=head['head_yaw_joint'][1],named_joints=['head_pitch_joint'])
+        report.update(initial_pitch=start,target_pitch=targets['head_pitch_joint'],
+                      initial_yaw=head['head_yaw_joint'][1],named_joints=names)
         if args.execute and need_motion:
             publisher=rospy.Publisher('/pi_plus_absolute',JointState,queue_size=1)
             deadline=time.monotonic()+2
@@ -147,15 +163,20 @@ def main():
                 if not running and max(abs(v[1]-initial_body[n]) for n,v in current_body.items())>.08:raise RuntimeError('Body moved; head step stopped')
                 g=quaternion_matrix_xyzw(current_imu[1]).T@np.array([0.,0.,-1.])
                 if np.arccos(np.clip(g@gravity,-1,1))>np.deg2rad(4):raise RuntimeError('Body tilt changed; head step stopped')
-                if abs(current_head['head_yaw_joint'][1]-report['initial_yaw'])>.04:raise RuntimeError('Head yaw changed unexpectedly')
-                q=(smooth_setpoint(start,target,now-begun,ramp_duration) if args.restore_saved_pose
-                   else start+(target-start)*min(1.,(now-begun)/ramp_duration))
-                if abs(current_head['head_pitch_joint'][1]-q)>.10:raise RuntimeError('Head pitch tracking error')
-                msg=JointState();msg.header.stamp=rospy.Time.now();msg.name=['head_pitch_joint'];msg.position=[q]
+                if args.restore_saved_pose:
+                    positions=[smooth_setpoint(profile_starts[name],targets[name],now-begun,ramp_duration) for name in names]
+                else:
+                    if abs(current_head['head_yaw_joint'][1]-report['initial_yaw'])>.04:raise RuntimeError('Head yaw changed unexpectedly')
+                    positions=[start+(target-start)*min(1.,(now-begun)/ramp_duration)]
+                for name,q in zip(names,positions):
+                    if abs(current_head[name][1]-q)>.10:raise RuntimeError('Head joint tracking error: '+name)
+                msg=JointState();msg.header.stamp=rospy.Time.now();msg.name=names;msg.position=positions
                 publisher.publish(msg);sent+=1;time.sleep(.05)
             time.sleep(.2)
         _,_,head=snapshot(require_standby=True);report['final_pitch']=head['head_pitch_joint'][1]
-        if args.execute and abs(report['final_pitch']-expected)>.025:raise RuntimeError('Head did not reach the requested target')
+        report['final_yaw']=head['head_yaw_joint'][1]
+        if args.execute and abs(report['final_pitch']-expected['head_pitch_joint'])>.025:raise RuntimeError('Head did not reach the requested target')
+        if args.execute and args.restore_saved_pose and abs(report['final_yaw']-expected['head_yaw_joint'])>.04:raise RuntimeError('Head yaw did not reach the requested target')
         report['status']=('saved_pose_restored' if args.restore_saved_pose else 'step_completed') if args.execute else 'preflight_passed_no_motion'
     except Exception as exc:report.update(status='aborted',error=str(exc))
     finally:

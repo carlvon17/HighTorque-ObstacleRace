@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="data:,"><title>RT11 箱区调参</title>
+<style>
+:root{color-scheme:light;--ink:#172c2c;--muted:#506b68;--line:#cfdfd9;--green:#086a55;--paper:#fff;--bg:#f1f5f1}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 Inter,"PingFang SC","Microsoft YaHei",sans-serif}main{max-width:1080px;margin:0 auto;padding:clamp(20px,4vw,54px) 24px}header,footer,.between,.values,.actions,.switch{display:flex;align-items:center;justify-content:space-between;gap:12px}h1,h2,p{margin:0}h1{font-size:clamp(25px,4vw,40px);letter-spacing:-.04em}h2{font-size:20px}header{margin-bottom:26px}.brand{font-family:ui-monospace,monospace;color:var(--green);font-weight:750}.conn{border:1px solid var(--line);border-radius:20px;padding:5px 12px;white-space:nowrap;font-size:13px}.conn:before{content:'●';color:var(--green);margin-right:7px}.conn.off:before{color:#b46a22}.layout{display:grid;grid-template-columns:minmax(0,1.62fr) minmax(258px,1fr);gap:18px;align-items:start}section,aside{background:var(--paper);border:1px solid var(--line);border-radius:16px;padding:24px}.switch{font-size:14px;white-space:nowrap;color:var(--muted)}input{accent-color:var(--green)}input[type=checkbox]{width:18px;height:18px}#fields{margin-top:12px}.row{border-top:1px solid var(--line);padding:15px 0 12px}.row label{font-weight:650}.values{justify-content:flex-start;gap:5px;font-size:14px;color:var(--muted)}input[type=number]{width:73px;border:1px solid #a8bfb5;border-radius:6px;padding:4px;color:var(--ink);background:white;font:600 16px ui-monospace,monospace;text-align:center}input[type=range]{display:block;width:100%;margin:9px 0 0;height:20px}.note,.detail,.old{font-size:13px;color:var(--muted)}.old{margin-top:2px}.actions{justify-content:flex-end;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:16px}button{border:1px solid var(--line);background:white;color:var(--ink);padding:10px 16px;border-radius:7px;font:inherit;font-weight:600;font-size:14px;cursor:pointer}button.primary{background:var(--green);color:white;border-color:var(--green)}button:disabled{opacity:.45;cursor:auto}aside{background:#153a32;color:#f2fcf3}aside .detail,aside .note{color:#bcd4c6}.phase{margin:22px 0 3px;color:#bdebd6;font-size:15px}.status{font-weight:650;font-size:23px;min-height:34px}.metrics{border-block:1px solid #416359;margin:20px 0;padding:14px 0}.metrics .between{margin:6px 0}.num{font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums}.editing{margin-top:12px;min-height:22px;color:var(--green);font-size:14px}.error{color:#96420d}footer{margin-top:18px;font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+@media(max-width:720px){main{padding:18px 12px}.layout{display:flex;flex-direction:column-reverse}.layout>*{width:100%}section,aside{padding:16px}.phase,.metrics{margin:7px 0}.metrics{padding:4px 0}header{margin-bottom:13px}.status{font-size:19px}.actions{justify-content:stretch}.actions button{flex:1}}
+</style>
+<main>
+<header><h1><span class="brand">RT11</span> 箱区调参</h1><span id="connection" class="conn off">连接中</span></header>
+<div class="layout"><section><div class="between"><h2>步幅与速度</h2><label class="switch"><input id="auto" type="checkbox">自动应用</label></div>
+<div id="fields"></div><div class="actions"><button id="reset" disabled>恢复默认值</button><button id="apply" class="primary" disabled>应用到下一步</button></div>
+<p class="editing" id="message" role="status">正在读取参数…</p><p class="note">修改仅对本次运行生效。迈步中提交的设置会等到发出零速、取得新画面后采用。</p></section>
+<aside><h2>机器人状态</h2><p class="phase" id="phase">等待连接</p><p class="status" id="action">—</p>
+<div class="metrics"><div class="between"><span>当前首箱横向距离</span><strong class="num" id="gap">—</strong></div>
+<div class="between"><span>首箱放行门槛</span><strong class="num" id="target">—</strong></div>
+<div class="between"><span>已下达步数</span><strong class="num" id="count">—</strong></div></div>
+<p class="detail">横向距离按机器人中心到箱子中心计算。</p></aside></div><footer><span id="run">—</span><span id="version"></span></footer>
+</main>
+<script>
+'use strict';
+const id=s=>document.getElementById(s),token=location.hash.slice(1);
+const labels={no_current_geometry:'看不清，等待新画面',initializing:'等待箱区观测',no_passage_side:'等待确认绕行方向',wait_range:'等待测出箱距',observe_first_from_standoff:'靠近并对准首箱',await_zero_publication:'等待零速指令发出',wait_post_step_capture:'等待停步后的新画面',lateral_step:'小步横移',short_side_step:'小步横移',short_forward_step:'小步前进',short_turn:'小幅调整朝向',confirmed_path:'已确认通道',lateral_clearance:'横向距离不足',wait_visual_displacement:'等待画面确认上一步位移',missing_step_measurement:'等待测出移动距离',phase_observation:'停步，重新确认箱位',direction_change:'停步，准备换方向'};
+const phases={enter:'进入箱区',along:'沿箱前进',shift:'箱间换侧',lane_entry:'返回车道'};
+const edited=new Set(),widgets={},headers={Authorization:'Bearer '+token};
+let state=null,dirty=false,base=0,busy=false,generation=0,timer,connected=false,polling=false;
+const say=(s,error=false)=>{id('message').textContent=s;id('message').classList.toggle('error',error)};
+function createFields(specs){
+ for(const [key,label,unit,min,max,step] of specs){
+  const row=document.createElement('div');row.className='row';
+  row.innerHTML='<div class="between"><label></label><div class="values"><input type="number"><span></span></div></div><input type="range"><div class="old"></div>';
+  const n=row.querySelector('[type=number]'),r=row.querySelector('[type=range]'),l=row.querySelector('label');
+  n.id='value-'+key;l.htmlFor=n.id;l.textContent=label;row.querySelector('.values span').textContent=unit;
+  for(const el of [r,n]){el.min=min;el.max=max;el.step=step}
+  r.setAttribute('aria-label',label+' 滑块');widgets[key]={r,n,unit,old:row.querySelector('.old')};
+  r.oninput=()=>{n.value=r.value;edit(key)};n.oninput=()=>{if(n.value!==''&&n.validity.valid)r.value=n.value;edit(key)};
+  id('fields').append(row);
+ }
+}
+function fill(values){for(const [k,v] of Object.entries(values)){widgets[k].r.value=v;widgets[k].n.value=v}}
+function edit(key){if(key)edited.add(key);else for(const field of Object.keys(widgets))edited.add(field);if(!dirty)base=state.revision;dirty=true;generation++;say('有未提交的更改');buttons();clearTimeout(timer);if(id('auto').checked)timer=setTimeout(send,400)}
+function buttons(){id('apply').disabled=!connected||!dirty||busy;id('reset').disabled=!connected||busy;id('auto').disabled=!connected;
+ for(const w of Object.values(widgets)){w.n.disabled=w.r.disabled=!connected}}
+function draw(s){
+ const c=s.control,active=c.applied||s.defaults;
+ if(!state){createFields(s.fields);fill(s.desired)}
+ if(!dirty&&!busy){fill(s.desired);base=s.revision}
+ else if(dirty&&!busy){for(const [k,v] of Object.entries(s.desired)){if(!edited.has(k)){widgets[k].n.value=v;widgets[k].r.value=v}}}
+ state=s;connected=true;buttons();
+ id('connection').className='conn';id('connection').textContent='已连接';
+ id('run').textContent='运行 '+s.run;
+ id('version').textContent=c.revision===undefined?'等待控制器反馈':'生效版本 '+c.revision+' / 已提交 '+s.revision;
+ const pending=s.revision>(c.revision||0);
+ for(const [k,w] of Object.entries(widgets)){w.old.textContent=(c.applied?'已生效 ':'启动默认 ')+active[k]+' '+w.unit+
+  (pending?'　待生效 '+s.desired[k]+' '+w.unit:'')}
+ if(!dirty&&!busy)say(s.stale?'等待导航控制器反馈':pending?'已提交，等待下一步生效':c.applied?'当前设置已生效':'等待导航控制器就绪');
+ const valid=!!c.timestamp&&!s.stale;
+ id('phase').textContent=valid?(c.done?'已离开箱区':c.started?'第 '+(c.index+1)+' 箱 · '+(phases[c.phase]||c.phase):'巡线中'):'等待导航反馈';
+ id('action').textContent=!valid?'暂无实时观测':c.done?'已接回巡线':!c.started?'等待进入箱区':(labels[c.gate]||c.gate||'等待确认');
+ id('gap').textContent=valid&&c.started&&!c.done&&c.index===0&&c.phase==='enter'&&c.gap!=null?c.gap.toFixed(1)+' cm':'—';
+ id('target').textContent=active.first_gap+' cm';id('count').textContent=valid?c.count:'—';
+}
+async function refresh(){
+ if(polling)return;polling=true;
+ try{const res=await fetch('/api/state',{headers,cache:'no-store'});if(!res.ok)throw Error(res.status===403?'本次面板链接已失效':'等待连接');
+ const s=await res.json();if(!busy&&(!state||s.revision>=state.revision))draw(s)}
+ catch(e){connected=false;buttons();id('connection').className='conn off';id('connection').textContent='未连接';id('phase').textContent='离线';id('action').textContent='等待机器人连接';id('gap').textContent='—';say(e.message==='本次面板链接已失效'?e.message:'本次运行已结束或机器人暂时离线',true)}
+ finally{polling=false}
+}
+async function send(){
+ if(!connected||!dirty||busy)return;
+ const values={};for(const [k,w] of Object.entries(widgets)){if(!w.n.value||!w.n.reportValidity())return;values[k]=Number(w.n.value)}
+ const mark=generation;busy=true;buttons();clearTimeout(timer);
+ try{const res=await fetch('/api/settings',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({base,values})});
+ const reply=await res.json();
+ if(!res.ok){if(res.status===409){id('auto').checked=false;busy=false;base=reply.revision;draw({...state,revision:base,desired:reply.desired})}throw Error(reply.error||'提交失败')}
+ base=reply.revision;state={...state,revision:base,desired:values};if(generation===mark){dirty=false;edited.clear()}say('已提交，等待控制器采用')}
+ catch(e){id('auto').checked=false;say(e.message,true)}
+ finally{busy=false;buttons();await refresh();if(dirty&&id('auto').checked)timer=setTimeout(send,400)}
+}
+id('apply').onclick=send;id('reset').onclick=()=>{fill(state.defaults);edit()};id('auto').onchange=()=>{clearTimeout(timer);if(id('auto').checked&&dirty)send()};
+if(token){refresh();setInterval(refresh,500)}else{say('请使用启动终端打印的面板链接。机器人本机可打开 /local。',true)}
+</script></html>

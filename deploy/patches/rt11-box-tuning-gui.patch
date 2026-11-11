@@ -1,0 +1,828 @@
+diff --git a/deploy/box_panel.html b/deploy/box_panel.html
+new file mode 100644
+index 0000000..2f3a850
+--- /dev/null
++++ b/deploy/box_panel.html
+@@ -0,0 +1,83 @@
++<!doctype html>
++<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
++<link rel="icon" href="data:,"><title>RT11 箱区调参</title>
++<style>
++:root{color-scheme:light;--ink:#172c2c;--muted:#506b68;--line:#cfdfd9;--green:#086a55;--paper:#fff;--bg:#f1f5f1}
++*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 Inter,"PingFang SC","Microsoft YaHei",sans-serif}main{max-width:1080px;margin:0 auto;padding:clamp(20px,4vw,54px) 24px}header,footer,.between,.values,.actions,.switch{display:flex;align-items:center;justify-content:space-between;gap:12px}h1,h2,p{margin:0}h1{font-size:clamp(25px,4vw,40px);letter-spacing:-.04em}h2{font-size:20px}header{margin-bottom:26px}.brand{font-family:ui-monospace,monospace;color:var(--green);font-weight:750}.conn{border:1px solid var(--line);border-radius:20px;padding:5px 12px;white-space:nowrap;font-size:13px}.conn:before{content:'●';color:var(--green);margin-right:7px}.conn.off:before{color:#b46a22}.layout{display:grid;grid-template-columns:minmax(0,1.62fr) minmax(258px,1fr);gap:18px;align-items:start}section,aside{background:var(--paper);border:1px solid var(--line);border-radius:16px;padding:24px}.switch{font-size:14px;white-space:nowrap;color:var(--muted)}input{accent-color:var(--green)}input[type=checkbox]{width:18px;height:18px}#fields{margin-top:12px}.row{border-top:1px solid var(--line);padding:15px 0 12px}.row label{font-weight:650}.values{justify-content:flex-start;gap:5px;font-size:14px;color:var(--muted)}input[type=number]{width:73px;border:1px solid #a8bfb5;border-radius:6px;padding:4px;color:var(--ink);background:white;font:600 16px ui-monospace,monospace;text-align:center}input[type=range]{display:block;width:100%;margin:9px 0 0;height:20px}.note,.detail,.old{font-size:13px;color:var(--muted)}.old{margin-top:2px}.actions{justify-content:flex-end;flex-wrap:wrap;border-top:1px solid var(--line);padding-top:16px}button{border:1px solid var(--line);background:white;color:var(--ink);padding:10px 16px;border-radius:7px;font:inherit;font-weight:600;font-size:14px;cursor:pointer}button.primary{background:var(--green);color:white;border-color:var(--green)}button:disabled{opacity:.45;cursor:auto}aside{background:#153a32;color:#f2fcf3}aside .detail,aside .note{color:#bcd4c6}.phase{margin:22px 0 3px;color:#bdebd6;font-size:15px}.status{font-weight:650;font-size:23px;min-height:34px}.metrics{border-block:1px solid #416359;margin:20px 0;padding:14px 0}.metrics .between{margin:6px 0}.num{font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums}.editing{margin-top:12px;min-height:22px;color:var(--green);font-size:14px}.error{color:#96420d}footer{margin-top:18px;font-size:12px;color:var(--muted);overflow-wrap:anywhere}
++@media(max-width:720px){main{padding:18px 12px}.layout{display:flex;flex-direction:column-reverse}.layout>*{width:100%}section,aside{padding:16px}.phase,.metrics{margin:7px 0}.metrics{padding:4px 0}header{margin-bottom:13px}.status{font-size:19px}.actions{justify-content:stretch}.actions button{flex:1}}
++</style>
++<main>
++<header><h1><span class="brand">RT11</span> 箱区调参</h1><span id="connection" class="conn off">连接中</span></header>
++<div class="layout"><section><div class="between"><h2>步幅与速度</h2><label class="switch"><input id="auto" type="checkbox">自动应用</label></div>
++<div id="fields"></div><div class="actions"><button id="reset" disabled>恢复默认值</button><button id="apply" class="primary" disabled>应用到下一步</button></div>
++<p class="editing" id="message" role="status">正在读取参数…</p><p class="note">修改仅对本次运行生效。迈步中提交的设置会等到发出零速、取得新画面后采用。</p></section>
++<aside><h2>机器人状态</h2><p class="phase" id="phase">等待连接</p><p class="status" id="action">—</p>
++<div class="metrics"><div class="between"><span>当前首箱横向距离</span><strong class="num" id="gap">—</strong></div>
++<div class="between"><span>首箱放行门槛</span><strong class="num" id="target">—</strong></div>
++<div class="between"><span>已下达步数</span><strong class="num" id="count">—</strong></div></div>
++<p class="detail">横向距离按机器人中心到箱子中心计算。</p></aside></div><footer><span id="run">—</span><span id="version"></span></footer>
++</main>
++<script>
++'use strict';
++const id=s=>document.getElementById(s),token=location.hash.slice(1);
++const labels={no_current_geometry:'看不清，等待新画面',initializing:'等待箱区观测',no_passage_side:'等待确认绕行方向',wait_range:'等待测出箱距',observe_first_from_standoff:'靠近并对准首箱',await_zero_publication:'等待零速指令发出',wait_post_step_capture:'等待停步后的新画面',lateral_step:'小步横移',short_side_step:'小步横移',short_forward_step:'小步前进',short_turn:'小幅调整朝向',confirmed_path:'已确认通道',lateral_clearance:'横向距离不足',wait_visual_displacement:'等待画面确认上一步位移',missing_step_measurement:'等待测出移动距离',phase_observation:'停步，重新确认箱位',direction_change:'停步，准备换方向'};
++const phases={enter:'进入箱区',along:'沿箱前进',shift:'箱间换侧',lane_entry:'返回车道'};
++const edited=new Set(),widgets={},headers={Authorization:'Bearer '+token};
++let state=null,dirty=false,base=0,busy=false,generation=0,timer,connected=false,polling=false;
++const say=(s,error=false)=>{id('message').textContent=s;id('message').classList.toggle('error',error)};
++function createFields(specs){
++ for(const [key,label,unit,min,max,step] of specs){
++  const row=document.createElement('div');row.className='row';
++  row.innerHTML='<div class="between"><label></label><div class="values"><input type="number"><span></span></div></div><input type="range"><div class="old"></div>';
++  const n=row.querySelector('[type=number]'),r=row.querySelector('[type=range]'),l=row.querySelector('label');
++  n.id='value-'+key;l.htmlFor=n.id;l.textContent=label;row.querySelector('.values span').textContent=unit;
++  for(const el of [r,n]){el.min=min;el.max=max;el.step=step}
++  r.setAttribute('aria-label',label+' 滑块');widgets[key]={r,n,unit,old:row.querySelector('.old')};
++  r.oninput=()=>{n.value=r.value;edit(key)};n.oninput=()=>{if(n.value!==''&&n.validity.valid)r.value=n.value;edit(key)};
++  id('fields').append(row);
++ }
++}
++function fill(values){for(const [k,v] of Object.entries(values)){widgets[k].r.value=v;widgets[k].n.value=v}}
++function edit(key){if(key)edited.add(key);else for(const field of Object.keys(widgets))edited.add(field);if(!dirty)base=state.revision;dirty=true;generation++;say('有未提交的更改');buttons();clearTimeout(timer);if(id('auto').checked)timer=setTimeout(send,400)}
++function buttons(){id('apply').disabled=!connected||!dirty||busy;id('reset').disabled=!connected||busy;id('auto').disabled=!connected;
++ for(const w of Object.values(widgets)){w.n.disabled=w.r.disabled=!connected}}
++function draw(s){
++ const c=s.control,active=c.applied||s.defaults;
++ if(!state){createFields(s.fields);fill(s.desired)}
++ if(!dirty&&!busy){fill(s.desired);base=s.revision}
++ else if(dirty&&!busy){for(const [k,v] of Object.entries(s.desired)){if(!edited.has(k)){widgets[k].n.value=v;widgets[k].r.value=v}}}
++ state=s;connected=true;buttons();
++ id('connection').className='conn';id('connection').textContent='已连接';
++ id('run').textContent='运行 '+s.run;
++ id('version').textContent=c.revision===undefined?'等待控制器反馈':'生效版本 '+c.revision+' / 已提交 '+s.revision;
++ const pending=s.revision>(c.revision||0);
++ for(const [k,w] of Object.entries(widgets)){w.old.textContent=(c.applied?'已生效 ':'启动默认 ')+active[k]+' '+w.unit+
++  (pending?'　待生效 '+s.desired[k]+' '+w.unit:'')}
++ if(!dirty&&!busy)say(s.stale?'等待导航控制器反馈':pending?'已提交，等待下一步生效':c.applied?'当前设置已生效':'等待导航控制器就绪');
++ const valid=!!c.timestamp&&!s.stale;
++ id('phase').textContent=valid?(c.done?'已离开箱区':c.started?'第 '+(c.index+1)+' 箱 · '+(phases[c.phase]||c.phase):'巡线中'):'等待导航反馈';
++ id('action').textContent=!valid?'暂无实时观测':c.done?'已接回巡线':!c.started?'等待进入箱区':(labels[c.gate]||c.gate||'等待确认');
++ id('gap').textContent=valid&&c.started&&!c.done&&c.index===0&&c.phase==='enter'&&c.gap!=null?c.gap.toFixed(1)+' cm':'—';
++ id('target').textContent=active.first_gap+' cm';id('count').textContent=valid?c.count:'—';
++}
++async function refresh(){
++ if(polling)return;polling=true;
++ try{const res=await fetch('/api/state',{headers,cache:'no-store'});if(!res.ok)throw Error(res.status===403?'本次面板链接已失效':'等待连接');
++ const s=await res.json();if(!busy&&(!state||s.revision>=state.revision))draw(s)}
++ catch(e){connected=false;buttons();id('connection').className='conn off';id('connection').textContent='未连接';id('phase').textContent='离线';id('action').textContent='等待机器人连接';id('gap').textContent='—';say(e.message==='本次面板链接已失效'?e.message:'本次运行已结束或机器人暂时离线',true)}
++ finally{polling=false}
++}
++async function send(){
++ if(!connected||!dirty||busy)return;
++ const values={};for(const [k,w] of Object.entries(widgets)){if(!w.n.value||!w.n.reportValidity())return;values[k]=Number(w.n.value)}
++ const mark=generation;busy=true;buttons();clearTimeout(timer);
++ try{const res=await fetch('/api/settings',{method:'POST',headers:{...headers,'Content-Type':'application/json'},body:JSON.stringify({base,values})});
++ const reply=await res.json();
++ if(!res.ok){if(res.status===409){id('auto').checked=false;busy=false;base=reply.revision;draw({...state,revision:base,desired:reply.desired})}throw Error(reply.error||'提交失败')}
++ base=reply.revision;state={...state,revision:base,desired:values};if(generation===mark){dirty=false;edited.clear()}say('已提交，等待控制器采用')}
++ catch(e){id('auto').checked=false;say(e.message,true)}
++ finally{busy=false;buttons();await refresh();if(dirty&&id('auto').checked)timer=setTimeout(send,400)}
++}
++id('apply').onclick=send;id('reset').onclick=()=>{fill(state.defaults);edit()};id('auto').onchange=()=>{clearTimeout(timer);if(id('auto').checked&&dirty)send()};
++if(token){refresh();setInterval(refresh,500)}else{say('请使用启动终端打印的面板链接。机器人本机可打开 /local。',true)}
++</script></html>
+diff --git a/deploy/box_panel.py b/deploy/box_panel.py
+new file mode 100644
+index 0000000..6249ab0
+--- /dev/null
++++ b/deploy/box_panel.py
+@@ -0,0 +1,203 @@
++"""Per-lap box tuning panel and its small file mailbox for the vision worker."""
++from dataclasses import asdict
++import hashlib
++import hmac
++from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++import json
++import os
++from pathlib import Path
++import secrets
++import socket
++import sys
++from threading import Lock, Thread
++import time
++from urllib.parse import parse_qs, urlsplit
++
++from navigation.box_tuning import BoxTuning, FIELDS
++
++PORT=18761
++PAIR_FILE=Path.home()/'.config/competition_nav/rt11-panel.key'
++
++
++def signed(key, message):
++    return hmac.new(key,message.encode(),hashlib.sha256).hexdigest()
++
++
++def write_json(path, data):
++    # A file has a single writer (HTTP submissions are serialized).
++    temp=path.with_suffix('.new')
++    with os.fdopen(os.open(str(temp),os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600),'w') as stream:
++        json.dump(data,stream,ensure_ascii=False,allow_nan=False)
++    temp.replace(path)
++
++
++class VisionMailbox:
++    def __init__(self, folder):
++        self.folder=folder
++        self.last_poll=-1.
++        self.seen=0
++
++    def update(self, servo, now):
++        if now-self.last_poll<.15:
++            return
++        self.last_poll=now
++        try:
++            item=json.loads((self.folder/'box-request.json').read_text())
++            if item['revision']>self.seen:
++                servo.queue_tuning(item['revision'],item['values'])
++                self.seen=item['revision']
++        except FileNotFoundError:
++            pass
++        except (OSError,ValueError,TypeError,KeyError) as exc:
++            print('RT11 panel request:',exc,file=sys.stderr)
++        try:
++            write_json(self.folder/'box-state.json',dict(servo.panel_status(now),timestamp=time.time()))
++        except (OSError,ValueError) as exc:
++            print('RT11 panel state:',exc,file=sys.stderr)
++
++
++class BoxPanel:
++    def __init__(self, folder, host='0.0.0.0', port=PORT, key_path=PAIR_FILE):
++        self.folder=Path(folder)
++        self.folder.mkdir(parents=True,exist_ok=True)
++        self.vision=self.folder/'vision'
++        self.vision.mkdir(exist_ok=True)
++        self.session=secrets.token_hex(16)
++        try:
++            self.key=key_path.read_bytes()
++            if len(self.key)!=32:
++                raise ValueError('Invalid RT11 panel pairing key')
++        except FileNotFoundError:
++            self.key=secrets.token_bytes(32)
++        self.token=signed(self.key,'panel/'+self.session)
++        self.defaults=asdict(BoxTuning())
++        self.values=self.defaults.copy()
++        self.revision=0
++        self.lock=Lock()
++        self.html=Path(__file__).with_name('box_panel.html').read_bytes()
++        self.server=ThreadingHTTPServer((host,port),PanelHandler)
++        self.server.panel=self
++        self.thread=Thread(target=self.server.serve_forever,daemon=True)
++
++    def start(self):
++        self.thread.start()
++        return self
++
++    def close(self):
++        self.server.shutdown()
++        self.server.server_close()
++        self.thread.join()
++
++    def state(self):
++        try:
++            control=json.loads((self.vision/'box-state.json').read_text())
++        except (FileNotFoundError,ValueError):
++            control={}
++        with self.lock:
++            return dict(session=self.session,run=self.folder.parent.name,fields=FIELDS,defaults=self.defaults,
++                        desired=self.values,revision=self.revision,control=control,
++                        stale=time.time()-control.get('timestamp',0)>1.5)
++
++    def submit(self,item):
++        if not isinstance(item,dict) or type(item.get('base')) is not int:
++            raise ValueError('缺少设置版本')
++        values=asdict(BoxTuning.read(item.get('values')))
++        with self.lock:
++            if self.revision!=item['base']:
++                return 409,dict(revision=self.revision,desired=self.values,error='另一窗口刚刚更新了参数。请核对当前值后重新应用。')
++            revision=self.revision+1
++            write_json(self.vision/'box-request.json',dict(revision=revision,values=values))
++            self.values=values
++            self.revision=revision
++            return 200,dict(revision=revision)
++
++
++class PanelHandler(BaseHTTPRequestHandler):
++    def log_message(self,*args):
++        pass
++
++    def respond(self,code,data,kind='application/json; charset=utf-8',location=None):
++        body=data if isinstance(data,bytes) else json.dumps(data,ensure_ascii=False).encode()
++        self.send_response(code)
++        self.send_header('Content-Type',kind)
++        self.send_header('Cache-Control','no-store')
++        self.send_header('Referrer-Policy','no-referrer')
++        self.send_header('X-Frame-Options','DENY')
++        self.send_header('X-Content-Type-Options','nosniff')
++        if location:self.send_header('Location',location)
++        self.send_header('Content-Length',str(len(body)))
++        self.end_headers()
++        try:self.wfile.write(body)
++        except (BrokenPipeError,ConnectionResetError):pass
++
++    def authorized(self):
++        return hmac.compare_digest(self.headers.get('Authorization','').encode(),
++                                   ('Bearer '+self.server.panel.token).encode())
++
++    def do_GET(self):
++        panel=self.server.panel
++        url=urlsplit(self.path)
++        if url.path=='/':
++            self.respond(200,panel.html,'text/html; charset=utf-8')
++        elif url.path=='/local' and self.client_address[0]=='127.0.0.1' and self.headers.get('Host','').split(':')[0] in ('127.0.0.1','localhost'):
++            self.respond(302,b'',location='/#'+panel.token)
++        elif url.path=='/session':
++            nonce=parse_qs(url.query).get('nonce',[''])[0]
++            if len(nonce)!=32 or any(c not in '0123456789abcdef' for c in nonce):
++                return self.respond(400,{})
++            proof=signed(panel.key,'open/'+panel.session+'/'+nonce)
++            self.respond(200,dict(session=panel.session,proof=proof))
++        elif url.path=='/api/state' and self.authorized():
++            self.respond(200,panel.state())
++        else:self.respond(403 if url.path=='/api/state' else 404,{})
++
++    def do_POST(self):
++        if self.path!='/api/settings' or not self.authorized():
++            return self.respond(403,{})
++        if self.headers.get_content_type()!='application/json':
++            return self.respond(415,{})
++        try:
++            size=int(self.headers.get('Content-Length',0))
++            if not 1<=size<=2048:return self.respond(413,{})
++            code,result=self.server.panel.submit(json.loads(self.rfile.read(size)))
++        except (ValueError,TypeError,KeyError,OverflowError):
++            return self.respond(400,dict(error='请输入各项允许范围内的数值'))
++        except OSError:
++            return self.respond(503,dict(error='机器人暂时无法保存设置'))
++        self.respond(code,result)
++
++
++def panel_address(port):
++    client=os.environ.get('SSH_CONNECTION','').split()
++    if len(client)==4:
++        address=client[2]
++    else:
++        try:
++            address=socket.gethostbyname(socket.gethostname())
++            # Linux often maps the host name to 127.0.1.1.
++            with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as sock:
++                sock.connect(('192.0.2.1',9))
++                address=sock.getsockname()[0]
++        except OSError:
++            address='127.0.0.1'
++    return 'http://'+('['+address+']' if ':' in address else address)+':'+str(port)
++
++
++def start_panel(folder):
++    panel=BoxPanel(folder)
++    try:
++        write_json(Path(folder)/'box-panel.json',dict(url=panel_address(panel.server.server_port)+'/#'+panel.token))
++        panel.start()
++        peer=os.environ.get('SSH_CONNECTION','').split()
++        if len(peer)==4:
++            # The paired Mac can find the new address after a Wi-Fi change.
++            try:
++                with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as sock:
++                    message=dict(session=panel.session,proof=signed(panel.key,'announce/'+panel.session))
++                    sock.sendto(json.dumps(message).encode(),(peer[0],PORT+1))
++            except OSError:
++                pass
++        return panel
++    except Exception:
++        panel.server.server_close()
++        raise
+diff --git a/deploy/line_trial.py b/deploy/line_trial.py
+index 5fb98e5..4c6843a 100644
+--- a/deploy/line_trial.py
++++ b/deploy/line_trial.py
+@@ -328,7 +328,14 @@ def supervisor_role(args):
+         return subprocess.Popen(['/usr/bin/python3','/opt/ros/noetic/lib/joy_teleop/joy_teleop.py','__name:=joy_teleop'],stdin=subprocess.DEVNULL,stdout=log,stderr=log,start_new_session=True)
+     def interrupted(signum,frame):raise RuntimeError('trial interrupted')
+     signal.signal(signal.SIGTERM,interrupted);signal.signal(signal.SIGHUP,interrupted)
++    panel=None
+     try:
++        if args.shared_navigation and args.execute:
++            try:
++                from deploy.box_panel import start_panel
++                panel=start_panel(out)
++            except (OSError,ValueError) as exc:
++                print('RT11 调参面板启动失败：'+str(exc),flush=True)
+         if publishers('/cmd_vel')!=['/joy_teleop'] or publishers('/joy_msg')!=['/joy_teleop']:raise RuntimeError('unexpected control ownership before trial')
+         wait_for(lambda:len(commands)>=5,3,'no current manual velocity')
+         if any(max(abs(v) for v in r[1:])>.005 for r in commands[-5:]):raise RuntimeError('manual velocity is not neutral')
+@@ -394,6 +401,8 @@ def supervisor_role(args):
+                     output_peak_vx=max((r[1] for r in commands),default=0.),output_peak_abs_yaw=max((abs(r[3]) for r in commands),default=0.),
+                     manual_translator_restored=(not changed) or restored,manual_translator_untouched=not changed,controller_mode_changed=False,body_joint_commands_sent=False)
+         for sub in subs:sub.unregister()
++        if panel is not None:
++            panel.close()
+         control_lock.close()
+         if args.shared_navigation:
+             from deploy.stop_archive import reconcile
+diff --git a/deploy/navigation_cli.py b/deploy/navigation_cli.py
+index c40ba2c..6638f60 100644
+--- a/deploy/navigation_cli.py
++++ b/deploy/navigation_cli.py
+@@ -133,9 +133,15 @@ def follow_lap(record):
+     last_print, signature = None, None
+     offset, last_image, last_stop, last_cells = 0, None, None, None
+     last_event = None
++    panel_announced = False
+     last_image_stop_id = None
+     try:
+         while True:
++            if not panel_announced:
++                panel=read_json(output/'box-panel.json')
++                if panel.get('url'):
++                    print('RT11 箱区调参面板  '+panel['url'],flush=True)
++                    panel_announced=True
+             state = task_status(record)
+             row, vision_age = latest_row(vision/'telemetry.jsonl')
+             guard, guard_age = latest_row(output/'guard.jsonl')
+diff --git a/deploy/rt11_mac_panel_watch.py b/deploy/rt11_mac_panel_watch.py
+new file mode 100644
+index 0000000..455120d
+--- /dev/null
++++ b/deploy/rt11_mac_panel_watch.py
+@@ -0,0 +1,71 @@
++"""Open the paired RT11 robot's tuning panel once per lap on the operator's Mac."""
++import hashlib
++import hmac
++import json
++import secrets
++import select
++import socket
++import subprocess
++import time
++from pathlib import Path
++from urllib.request import build_opener, ProxyHandler
++
++
++def signature(key, message):
++    return hmac.new(key, message.encode(), hashlib.sha256).hexdigest()
++
++
++def session_id(advert):
++    value = advert['session']
++    if len(value) != 32 or any(c not in '0123456789abcdef' for c in value):
++        raise ValueError('Invalid RT11 session')
++    return value
++
++
++def listen():
++    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
++    try:
++        sock.bind(('', 18762))
++    except OSError:
++        sock.close()
++        return None
++    return sock
++
++
++def watch():
++    folder = Path(__file__).resolve().parent
++    address = folder / 'robot-url'
++    base = address.read_text().strip()
++    key = (folder / 'pair.key').read_bytes()
++    client = build_opener(ProxyHandler({}))
++    marker = folder / 'last-session'
++    last = marker.read_text() if marker.exists() else ''
++    sock = listen()
++    while True:
++        try:
++            if sock and select.select([sock], [], [], 2)[0]:
++                packet, peer = sock.recvfrom(1024)
++                advert = json.loads(packet)
++                proof = signature(key, 'announce/' + session_id(advert))
++                if hmac.compare_digest(advert['proof'], proof):
++                    base = 'http://' + peer[0] + ':18761'
++            elif sock is None:
++                time.sleep(2)
++            nonce = secrets.token_hex(16)
++            with client.open(base + '/session?nonce=' + nonce, timeout=1.2) as response:
++                advert = json.loads(response.read(2048))
++            session = session_id(advert)
++            proof = signature(key, 'open/' + session + '/' + nonce)
++            if session == last or not hmac.compare_digest(advert['proof'], proof):
++                continue
++            token = signature(key, 'panel/' + session)
++            subprocess.run(['/usr/bin/open', base + '/#' + token], check=True, timeout=8)
++            marker.write_text(session)
++            address.write_text(base)
++            last = session
++        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
++            continue
++
++
++if __name__ == '__main__':
++    watch()
+diff --git a/deploy/shared_navigation.py b/deploy/shared_navigation.py
+index 62b8d51..2acee2e 100644
+--- a/deploy/shared_navigation.py
++++ b/deploy/shared_navigation.py
+@@ -229,6 +229,8 @@ def run(args, publish=False):
+             runtime = OnboardNavigation(sw, sh, intrinsics, config['camera_position_body_m'],
+                 config['camera_rotation_optical_to_body'], args.speed,
+                 float(config.get('observation_lease_s', .35)))
++            from deploy.box_panel import VisionMailbox
++            mailbox=VisionMailbox(out) if publish else None
+             if hasattr(runtime, 'publish_velocity') and not hasattr(runtime, 'freeze_publish_velocity'):
+                 raise ValueError('A 50 Hz box controller must implement freeze_publish_velocity()')
+             if hasattr(runtime, 'update_legs'):
+@@ -324,6 +326,8 @@ def run(args, publish=False):
+                 # Shadow calculates candidates with declared transforms, while
+                 # retaining every calibration inhibit in the diagnostic record.
+                 enabled = True
++                if mailbox is not None:
++                    mailbox.update(runtime.crates, now)
+                 candidate = runtime.command(now, enabled=enabled, measured_turn_limit=turn_cutoff.measurement)
+                 desired = runtime.desired.copy()
+                 computation_ms = (time.monotonic()-tick)*1000
+diff --git a/navigation/box_servo.py b/navigation/box_servo.py
+index ed33274..092b7ac 100644
+--- a/navigation/box_servo.py
++++ b/navigation/box_servo.py
+@@ -1,10 +1,11 @@
+ """Body-relative box-face measurements and a metric servo for staggered crates."""
+-from dataclasses import dataclass, replace
++from dataclasses import asdict, dataclass, replace
+ from threading import Lock
+ 
+ from navigation.leg_odometry import ProLegOdometry
+ from navigation.box_tape import BoxTape
+ from navigation.box_steps import BoxSteps
++from navigation.box_tuning import BoxTuning
+ from navigation.box_body import limb_points, station_window
+ import cv2
+ import numpy as np
+@@ -104,6 +105,10 @@ class BoxServo:
+         self.kick_until=0.
+         self.tape=BoxTape()
+         self.steps=BoxSteps()
++        self.tuning=BoxTuning()
++        self.tuning_revision=0
++        self.pending_tuning=None
++        self.panel_gap=None
+         self.release_requested=False
+         self.hold_reason='initializing'
+         self.step_count=0
+@@ -372,6 +377,34 @@ class BoxServo:
+         velocity.published=published
+         return velocity
+ 
++    def queue_tuning(self, revision, values):
++        settings=BoxTuning.read(values)
++        with self.control_lock:
++            if revision<=self.tuning_revision or (self.pending_tuning and revision<=self.pending_tuning[0]):
++                return
++            self.pending_tuning=(revision,settings)
++            if self.frame is None or self.done:
++                self._adopt_tuning()
++
++    def _adopt_tuning(self):
++        if self.pending_tuning is not None:
++            self.tuning_revision,self.tuning=self.pending_tuning
++            self.pending_tuning=None
++
++    def panel_status(self, now):
++        with self.control_lock:
++            frame=self.frame
++            fresh=(frame is not None and frame.stamp>self.invalid_projection_time and 0<=now-frame.stamp<=.50)
++            gap=self.panel_gap
++            gate=self.hold_reason if fresh else 'no_current_geometry'
++            if fresh and self.steps.active is not None and gate in ('confirmed_path','lateral_step'):
++                gate=self.steps.reason
++            return dict(applied=asdict(self.tuning),revision=self.tuning_revision,
++                        phase=self.phase,index=self.index,done=self.done,started=bool(frame and frame.centers),
++                        gate=gate,
++                        gap=gap[1] if fresh and gap and gap[0]==frame.stamp else None,
++                        count=self.steps.count,moving=self.steps.active is not None and fresh)
++
+     def invalidate_projection(self, stamp):
+         with self.control_lock:
+             self.invalid_projection_time = max(self.invalid_projection_time, stamp)
+@@ -398,6 +431,8 @@ class BoxServo:
+         if reason:
+             self.hold_reason=reason
+             return np.zeros(3)
++        if self.steps.active is None:
++            self._adopt_tuning()
+         phase=(self.phase,self.index,self.approached)
+         vector=self._drive(t,yaw,frame,pos,vel)
+         if self.release_requested and self.steps.active is None:
+@@ -412,7 +447,8 @@ class BoxServo:
+         axis=1 if self.hold_reason=='lateral_step' else 0
+         if np.linalg.norm(local)<.015 and abs(vector[2])>.02:axis=2
+         sign=np.sign(local[axis]) if axis<2 else np.sign(vector[2])
+-        vector=self.steps.apply(t,frame,pos,vector,axis,sign)
++        step_cm=self.tuning.side_step if axis==1 else self.tuning.forward_step if axis==0 else 6.3
++        vector=self.steps.apply(t,frame,pos,vector,axis,sign,step_cm/100.)
+         if self.steps.reason and self.steps.active is None and np.all(vector==0):
+             self.hold_reason=self.steps.reason
+         self.step_count=self.steps.count
+@@ -423,7 +459,9 @@ class BoxServo:
+         i=self.index
+         center=frame.centers[i]
+         side=frame.side*(-1 if i%2 else 1)
+-        y=center[1]+side*.42
++        entry_gap=self.tuning.first_gap/100. if i==0 else .39
++        pass_offset=round(entry_gap+.03,4)
++        y=center[1]+side*pass_offset
+         x_seen,y_seen=frame.axis_evidence
+         box_anchor=bool(frame.identified) or (x_seen and y_seen)
+         tape_anchor=frame.tape_fix and frame.tape_longitudinal
+@@ -436,6 +474,10 @@ class BoxServo:
+             self.hold_reason='no_current_geometry'
+             self.last_cmd=np.zeros(3)
+             return self.last_cmd.copy()
++        self.panel_gap=None
++        if frame.visual_xy[1] is not None:
++            side_gap=min(side*(pos[1]-center[1]),side*(frame.visual_xy[1]-center[1]))
++            self.panel_gap=(frame.stamp,float(side_gap*100.))
+         if self.phase=='enter' and not self.approached:
+             measured_x=frame.visual_xy[0]
+             if measured_x is None:
+@@ -461,10 +503,10 @@ class BoxServo:
+         side_gap=side*(pos[1]-center[1])
+         if frame.visual_xy[1] is not None:
+             side_gap=min(side_gap,side*(frame.visual_xy[1]-center[1]))
+-        lateral_step=self.phase in ('shift','lane_entry') or (self.phase=='enter' and side_gap<.39)
++        lateral_step=self.phase in ('shift','lane_entry') or (self.phase=='enter' and side_gap<entry_gap)
+         if lateral_step:
+             if self.steps.active is None:self.entry_station=float(pos[0])
+-        elif self.phase in ('along','enter') and (frame.visual_xy[1] is None or side_gap<.36):
++        elif self.phase in ('along','enter') and (frame.visual_xy[1] is None or side_gap<round(entry_gap-.03,4)):
+             self.hold_reason='lateral_clearance'
+             self.last_cmd=np.zeros(3)
+             return self.last_cmd.copy()
+@@ -485,7 +527,7 @@ class BoxServo:
+             # As the torso moves across the lane, the trailing outside foot
+             # approaches the previous crate. Advance through the midpoint
+             # gradually after the leading arm has crossed the next crate.
+-            total=abs(y-(center[1]+side*.42))
++            total=abs(y-(center[1]+side*pass_offset))
+             fraction=np.clip(1.-abs(y-pos[1])/total,0.,1.)
+             target_x=gate+.079*np.clip((fraction-.25)/.54,0.,1.)
+             body=self.body_sample
+@@ -500,11 +542,12 @@ class BoxServo:
+         vx0,vy0=vel
+         ahead=dx-.55*vx0
+         across=lateral-.33*vy0
+-        vx=np.clip(1.7*ahead,-.18,.22)
+-        vy=np.clip(2.3*across,-.26,.26)
++        vx=np.clip(1.7*ahead,-.18,self.tuning.forward_speed/100.)
++        side_limit=self.tuning.side_speed/100.
++        vy=np.clip(2.3*across,-side_limit,side_limit)
+         if lateral_step:
+             if abs(lateral)>.028 and vy*lateral>=0 and abs(vy)<.19:
+-                vy=np.copysign(.19,lateral)
++                vy=np.copysign(min(.19,side_limit),lateral)
+             vx=np.clip(3*(dx-.39*vx0)-.088*min(1.,abs(vy)/.15),-.20,.13)
+         elif abs(ahead)<.020:vx=0.
+         if self.phase=='along' and abs(vy)<.035 and 0.<vx<.15 and dx<.12:
+diff --git a/navigation/box_steps.py b/navigation/box_steps.py
+index 59fe17b..68a3282 100644
+--- a/navigation/box_steps.py
++++ b/navigation/box_steps.py
+@@ -38,7 +38,7 @@ class BoxSteps:
+             self.stop_requested=None
+         return None
+ 
+-    def apply(self,t,frame,position,vector,axis,sign):
++    def apply(self,t,frame,position,vector,axis,sign,distance=None):
+         if not np.any(np.abs(vector)>1.e-5):
+             if self.active is not None:self.stop(t)
+             return vector
+@@ -64,7 +64,8 @@ class BoxSteps:
+         # as at each plan. The independent time cap also bounds every grant
+         # when the encoders are missing or the robot remains stationary.
+         duration=.36 if axis==1 else .40
+-        distance=.046 if axis==1 else .063
++        if distance is None:
++            distance=.046 if axis==1 else .063
+         self.active=dict(axis=axis,sign=sign,visual=measured,origin=position.copy(),
+                          until=t+duration,distance=distance,sent=False)
+         self.count+=1
+diff --git a/navigation/box_tuning.py b/navigation/box_tuning.py
+new file mode 100644
+index 0000000..e1e9846
+--- /dev/null
++++ b/navigation/box_tuning.py
+@@ -0,0 +1,32 @@
++"""Operator-facing units are centimetres and centimetres per second."""
++from dataclasses import asdict, dataclass
++import math
++
++# field, label, unit, minimum, maximum, slider increment
++FIELDS = (
++    ('side_step', '横移一步', 'cm', 1., 9., .1),
++    ('forward_step', '前进一步', 'cm', 1., 12., .1),
++    ('side_speed', '横移速度上限', 'cm/s', 10., 30., 1.),
++    ('forward_speed', '前进速度上限', 'cm/s', 20., 30., 1.),
++    ('first_gap', '首箱横向让开距离', 'cm', 36., 45., .5),
++)
++
++
++@dataclass(frozen=True)
++class BoxTuning:
++    side_step: float = 4.6
++    forward_step: float = 6.3
++    side_speed: float = 26.
++    forward_speed: float = 22.
++    first_gap: float = 39.
++
++    @classmethod
++    def read(cls, values):
++        if not isinstance(values,dict) or set(values)!=set(asdict(cls())):
++            raise ValueError('请提交完整的五项设置')
++        for key,label,unit,lo,hi,increment in FIELDS:
++            value=values[key]
++            if (type(value) not in (int,float) or not math.isfinite(value) or
++                    not lo<=value<=hi or abs(round((value-lo)/increment)*increment+lo-value)>1e-6):
++                raise ValueError(f'{label}允许 {lo:g}–{hi:g} {unit}，步进 {increment:g}')
++        return cls(**values)
+diff --git a/release_manifest.json b/release_manifest.json
+index 27e5cc6..32d11a1 100644
+--- a/release_manifest.json
++++ b/release_manifest.json
+@@ -5,9 +5,10 @@
+     "__init__.py": "5116b22a589575c6b9f55158ece82507574c441351a8d7e32ca1d964f8107380",
+     "amp_contract.json": "d128ef7d1c039901d80ccc6d522d83cada396970b9ee4612ff330d4c38aac76b",
+     "box_body.py": "f78e0c9bfb39355d48bf8af33c776dab70b45e7e98cb5378d3d127212fb61ffa",
+-    "box_servo.py": "f4d1e27cd25041b94482221be279a81db3fc0bd0593337bd79e3339ae0a538d5",
+-    "box_steps.py": "d00b008f110b5eff04680948db21f4c659724b8d929616dc3859ba89afabf211",
++    "box_servo.py": "87635603868e03c26e9ab6b0f8babf4ce1079c6bf2433152b5c12aa09e04f433",
++    "box_steps.py": "801f3ed716ddb65bd6a0432540a65e04c34b6a71195780687932ec8158c8a552",
+     "box_tape.py": "fecb2da47d92957eb07eaa0a2b0a43dd7e9715afb13ff20a878295b42ea298ef",
++    "box_tuning.py": "284340d64588645b529e7d3bf9e4864856c46e95eace357f3cfef6546a840751",
+     "calibration.py": "42f46aded85643151027eadd3b6cbf1a8d53c446fd473787180d0bf57f072f48",
+     "command.py": "f9704718503c19da9a95d6d6052325db6bd68593858151d609bdcb5a2b79f734",
+     "dependencies.json": "ab15eb730632c982638ec9c26863037d8720b5df22eb7590d6434342750fd599",
+@@ -62,6 +63,8 @@
+     "deploy/NOSTOP.md": "9b4d60b60e9dd14ea4885db61db7b6e1a126daccba193a2403831dd1b423892a",
+     "deploy/README.md": "07a2d6fc746c138c021d457be8bdab0a16b442ff421fe586f7634dbf544feb4e",
+     "deploy/SHARED_NAVIGATION.md": "3fb98446345e044783de6bffecd8227d1d495da6c163048d1618610c7e1961e3",
++    "deploy/box_panel.html": "4bc92bb51e9172e342d1882dd07f94bfa0fe3dc73b0f7f583f76ccde7bff4449",
++    "deploy/box_panel.py": "2b96ab5261f8f32c3a232f940255a1060363c4a2c6d3b4917f368e6e1d7defe0",
+     "deploy/calibrate_ground.py": "e62583349e2e80a65a542e7c9947ac1c830b92c35ad732ff70f35c7830937044",
+     "deploy/controller_state.py": "cc983b2a73b8c284727de32191e8d0fdba346af9139fce4967e6c2fbac045856",
+     "deploy/geometry.py": "b578465da6e7b851247a7a4fee32f4ba147ef848c1f6b402538d0d7107f4586c",
+@@ -71,10 +74,10 @@
+     "deploy/install_shadow.sh": "40376f423981243b36157070f1b039c4a689a2925ad9f8c822bdb5997f9c6a93",
+     "deploy/launch_line_trial.py": "7cd1616047462ac76c05f8290ba06ae7b4ae7847f1ad69d3693e2467edc329a4",
+     "deploy/line_follow_core.py": "3cc5fc28b97302636e2760bb8d33436006e26a31cd49847ace43d1d0a3a8cb38",
+-    "deploy/line_trial.py": "9e9695a270bcc26dfbd4024fa2758fa95d792c09691c87d57bb6924d48581fc8",
++    "deploy/line_trial.py": "e15784b100c27b8ea058f207ab8ab9c02abfb5ebac0a21ba28a1c84cff8590f7",
+     "deploy/nav": "0642af455503366fdb684ed0300e316ac86fa3c425fc8064ec425f7097fa2a15",
+     "deploy/navigation_buttons.py": "d103b1133b810ccee63e3df261754162cb038952e74c51c6f73e06df07c17a79",
+-    "deploy/navigation_cli.py": "9f96e41fdb123b104bd0787dce02a8e33deb169b2d172c09b7b079697c21c67d",
++    "deploy/navigation_cli.py": "4da3240e80e21993669333d34270ad27b5700ab76ba9db3271f49771ff4131de",
+     "deploy/preview_camera.py": "b4c7f0a4fc1c0ff53b969ef3f9a463b4b1c830852ce264cc6665faa14aaf3f02",
+     "deploy/pro_config.json": "14994d6824caf2a406e4190479de2f52fe13cbcda119a9e3f0ebc55768385623",
+     "deploy/pro_head_model.py": "6199d9cf46fcba12ef84018e1d4f28ee767f28ec0c668731b146b988e6fdafe6",
+@@ -82,18 +85,20 @@
+     "deploy/realsense_stream.cpp": "d95dab1f462d11ecad497dd0cc5330e25507ade199525e868eecfb1f6dbfe49c",
+     "deploy/requirements-navigation.txt": "8bf974f4724c478b9d4a28341f8dbb16e4fefaf5c50ec0b08aa41f858bc697cc",
+     "deploy/reset_camera.cpp": "63abaa0853ecdcfe4658c9da51f79df63d95049aa7b3d5a6370cab8d84c18808",
++    "deploy/rt11_mac_panel_watch.py": "6df369426d77cbf72ba650778bf3b6f1246f642cab11d4a690666d4455c083a9",
+     "deploy/run_navigation_buttons.sh": "8327022110a897d02ad6364c6be352cbbf94d0624ef2300f3a98fb58faae5b64",
+     "deploy/run_shadow.sh": "cf3ae734c5a44d2e6f6560f9db682f5d19a0ed63c0416c86976492019b4f6fd9",
+     "deploy/shadow.py": "e4dd5d1ee718cded07baa9f5fc62a7244fc1a5f94a8046ab14e2b1585e05e58b",
+-    "deploy/shared_navigation.py": "5e7b3e517e0e3df94ce543aaf5e1e2d42cfcf1c1e3f7f1f6bcfd42deeaa13311",
++    "deploy/shared_navigation.py": "9deb74a5746dba72da393ba7bc257935994e4a54fec440b84a387c44e2602c9c",
+     "deploy/stop_archive.py": "a998f12c45fe5a68796202cb34b7de540bc2d0858d0bd8416c3ff2d4308b8cde",
+     "deploy/task_head_pose.json": "fe2f430b11a1bed540fb046415886082213fe231342ebd05f62a6910c44bbc6f",
+     "navigation/__init__.py": "5116b22a589575c6b9f55158ece82507574c441351a8d7e32ca1d964f8107380",
+     "navigation/amp_contract.json": "d128ef7d1c039901d80ccc6d522d83cada396970b9ee4612ff330d4c38aac76b",
+     "navigation/box_body.py": "f78e0c9bfb39355d48bf8af33c776dab70b45e7e98cb5378d3d127212fb61ffa",
+-    "navigation/box_servo.py": "f4d1e27cd25041b94482221be279a81db3fc0bd0593337bd79e3339ae0a538d5",
+-    "navigation/box_steps.py": "d00b008f110b5eff04680948db21f4c659724b8d929616dc3859ba89afabf211",
++    "navigation/box_servo.py": "87635603868e03c26e9ab6b0f8babf4ce1079c6bf2433152b5c12aa09e04f433",
++    "navigation/box_steps.py": "801f3ed716ddb65bd6a0432540a65e04c34b6a71195780687932ec8158c8a552",
+     "navigation/box_tape.py": "fecb2da47d92957eb07eaa0a2b0a43dd7e9715afb13ff20a878295b42ea298ef",
++    "navigation/box_tuning.py": "284340d64588645b529e7d3bf9e4864856c46e95eace357f3cfef6546a840751",
+     "navigation/calibration.py": "42f46aded85643151027eadd3b6cbf1a8d53c446fd473787180d0bf57f072f48",
+     "navigation/command.py": "f9704718503c19da9a95d6d6052325db6bd68593858151d609bdcb5a2b79f734",
+     "navigation/dependencies.json": "ab15eb730632c982638ec9c26863037d8720b5df22eb7590d6434342750fd599",
+@@ -126,6 +131,7 @@
+     "scripts/test_navigation_buttons.py": "4d768fe7a413598c2d703553725f0205b8f3d00a826843324e65b42c606c28e0",
+     "scripts/test_navigation_cli.py": "a4870ebb8c66094d02dd97d603ffc8658c3d832f7f4923ae98676470d6f4a1fd",
+     "scripts/test_rgbd_odometry.py": "00114e9e00e95a09cf0e83109a72dc793b8b1ea38152acb9dc6320f766e3201f",
++    "scripts/test_rt11_box_panel.py": "0d6a42a7eb61cf8b5874671f8343822ef8087a0eb02fc147ffae643d0266f141",
+     "scripts/test_rt11_box_publication.py": "1491f6bc1cdaea480108477219e4bf0652bd438daac2ab40e14c44387098eec9",
+     "scripts/test_rt11_box_steps.py": "5e7aaa3d394dc81e96943779cff198b00087faaa08b6668018af02f899a9898c",
+     "scripts/test_rt11_box_visibility.py": "9dc84b8303c08f56c6fda0ccd91ade51ff56e45093de847aca57d007a9dbb318",
+@@ -145,6 +151,6 @@
+   "real_motion_requires": "verified camera/IMU calibration, current sensors, immutable AMP identity, sole guarded publisher",
+   "nostop_policy": "Mission duration inherited from rt10; local manoeuvres may request zero velocity.",
+   "parent_release_id": "shared_nav_20261111_rt11",
+-  "parent_manifest_sha256": "8cf0c5df6c9acd3f3e455d7356f816681a887a86a58e6c4ed4f8df52a3b46987",
+-  "validation_scope": "Local MuJoCo and sensor-loss regression. See validation results beside this package."
++  "parent_manifest_sha256": "2d386ce2d8feb0b918421dccfce1f7c5a6545b702710a622d12862acd9d26cf5",
++  "validation_scope": "Static RT11 controller, HTTP, and two-browser checks. No simulation or robot motion for this update."
+ }
+diff --git a/scripts/test_rt11_box_panel.py b/scripts/test_rt11_box_panel.py
+new file mode 100644
+index 0000000..df72643
+--- /dev/null
++++ b/scripts/test_rt11_box_panel.py
+@@ -0,0 +1,94 @@
++"""Exercise the panel-to-controller mailbox without starting ROS or commanding hardware."""
++from dataclasses import asdict
++import json
++from pathlib import Path
++import tempfile
++import unittest
++from urllib.error import HTTPError
++from urllib.request import Request, urlopen
++
++import numpy as np
++from test_rt11_box_steps import BoxServo, view
++from deploy.box_panel import BoxPanel, VisionMailbox
++from navigation.box_tuning import BoxTuning
++
++
++class BoxPanelTest(unittest.TestCase):
++    def setUp(self):
++        self.tmp = tempfile.TemporaryDirectory()
++        self.addCleanup(self.tmp.cleanup)
++        root = Path(self.tmp.name)
++        self.panel = BoxPanel(root, '127.0.0.1', 0, root / 'missing-key').start()
++        self.addCleanup(self.panel.close)
++        self.mail = VisionMailbox(self.panel.vision)
++        self.nav = BoxServo()
++
++    def request(self, path, data=None, token=None):
++        headers = {'Authorization': 'Bearer ' + (self.panel.token if token is None else token),
++                   'Content-Type': 'application/json'}
++        url = 'http://127.0.0.1:' + str(self.panel.server.server_port) + path
++        body = json.dumps(data).encode() if data is not None else None
++        try:
++            with urlopen(Request(url, data=body, headers=headers), timeout=2) as r:
++                return r.status, json.load(r)
++        except HTTPError as e:
++            with e:
++                return e.code, json.load(e)
++
++    def test_forward_adopts_only_after_zero_receipt_and_new_capture(self):
++        nav = self.nav
++        nav.phase = 'along'
++        nav.along_started = 3.
++        nav.frame = view(3., (.6, .47))
++        first = nav.command(3.02, 0.)
++        hook = nav.publication(nav.frame, 4.)
++        hook.published(3.03, first)
++        values = dict(asdict(BoxTuning()), forward_step=3., forward_speed=24.)
++        self.assertEqual(self.request('/api/settings', dict(base=0, values=values))[0], 200)
++        self.mail.update(nav, 3.05)
++        state = self.request('/api/state')[1]
++        self.assertEqual((state['revision'], state['control']['revision']), (1, 0))
++        self.assertAlmostEqual(nav.command(3.08, 0.)[0], .22)
++        self.assertAlmostEqual(nav.steps.active['distance'], .063)
++        np.testing.assert_equal(nav.command(3.60, 0.), np.zeros(3))
++        nav.frame = view(3.61, (.65, .47))
++        np.testing.assert_equal(nav.command(3.63, 0.), np.zeros(3))
++        self.assertEqual(nav.tuning_revision, 0)
++        hook.published(3.64, np.zeros(3))
++        np.testing.assert_equal(nav.command(3.65, 0.), np.zeros(3))
++        self.assertEqual(nav.tuning_revision, 0)
++        nav.frame = view(3.70, (.65, .47))
++        self.assertAlmostEqual(nav.command(3.72, 0.)[0], .24)
++        self.assertAlmostEqual(nav.steps.active['distance'], .03)
++        self.mail.update(nav, 3.73)
++        self.assertEqual(self.request('/api/state')[1]['control']['applied'], values)
++
++    def test_first_box_gate_and_side_limit_and_distance(self):
++        for threshold, expected_axis in [(39, 0), (42, 1)]:
++            nav = BoxServo()
++            nav.queue_tuning(1, dict(asdict(BoxTuning()), first_gap=threshold, side_speed=10, side_step=2.))
++            nav.approached = True
++            nav.frame = view(8., (.49, .45))  # first box is centred at y=.05, gap = 40 cm
++            cmd = nav.command(8.01, 0.)
++            self.assertEqual(nav.steps.active['axis'], expected_axis)
++            self.assertAlmostEqual(nav.panel_status(8.01)['gap'], 40.)
++            if expected_axis == 1:
++                self.assertAlmostEqual(cmd[1], .10)
++                self.assertAlmostEqual(nav.steps.active['distance'], .02)
++
++    def test_stale_edits_and_invalid_values_preserve_last_request(self):
++        initial = asdict(BoxTuning())
++        for change in [dict(side_step=0), dict(side_speed=float('nan')), dict(first_gap=40.2)]:
++            self.assertEqual(self.request('/api/settings', dict(base=0, values=dict(initial, **change)))[0], 400)
++        self.assertEqual(self.request('/api/state', token='expired')[0], 403)
++        self.assertEqual(self.request('/api/settings', dict(base=0, values=initial), token='expired')[0], 403)
++        values = dict(initial, forward_step=5)
++        self.assertEqual(self.request('/api/settings', dict(base=0, values=values))[0], 200)
++        self.assertEqual(self.request('/api/settings', dict(base=0, values=initial))[0], 409)
++        self.mail.update(self.nav, 0)
++        data = self.request('/api/state')[1]
++        self.assertEqual(data['desired'], values)
++        self.assertEqual(data['control']['applied'], values)
++        self.assertEqual(self.request('/api/settings', dict(base=1, values=initial))[0], 200)
++        self.mail.update(self.nav, 1)
++        self.assertEqual(self.request('/api/state')[1]['control']['applied'], initial)

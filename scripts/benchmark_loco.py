@@ -9,7 +9,7 @@ from sim.robot import Robot, VENDOR, build_model
 
 
 def main():
-    model, _ = build_model(no_obstacles=True, timestep=.002)
+    model, _ = build_model(no_obstacles=True, timestep=.002, legacy=True)
     results = []
     commands = [[v, 0, 0] for v in (.04, .08, .10, .12, .20)]
     commands += [[0, v, 0] for v in (-.16, -.12, .08, .10, .12, .16)]

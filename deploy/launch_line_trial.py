@@ -10,13 +10,14 @@ ROOT=Path(__file__).resolve().parents[1]
 p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--output',type=Path,required=True)
 p.add_argument('--speed',type=float)
-p.add_argument('--duration',type=float,default=30.)
+p.add_argument('--duration',type=float)
 p.add_argument('--execute',action='store_true')
 p.add_argument('--turn-test',action='store_true')
 p.add_argument('--calibrated-turns',action='store_true')
 p.add_argument('--shared-navigation',action='store_true')
 p.add_argument('--config',type=Path,default=ROOT/'deploy/pro_config.json')
 args=p.parse_args()
+if args.duration is None:args.duration=300. if args.shared_navigation else 30.
 if args.speed is None:args.speed=.22 if args.shared_navigation else .4
 if args.shared_navigation and (args.turn_test or args.calibrated_turns):p.error('Shared navigation cannot use legacy turn modes')
 maximum_duration=300 if args.shared_navigation else (180 if args.calibrated_turns else 30)

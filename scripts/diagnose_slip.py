@@ -56,7 +56,8 @@ def main():
     config = json.loads((ROOT/'scene_config.json').read_text())
     start = next(s for s in config['starts'] if s['id']==summary['start'])
     model = mujoco.MjModel.from_xml_path(str((args.run/'scene.xml').resolve()))
-    robot = Robot(model, [*start['position'], np.deg2rad(start['yaw_degrees'])], policy=Path(summary['policy_path']))
+    robot = Robot(model, [*start['position'], np.deg2rad(start['yaw_degrees'])], policy=Path(summary['policy_path']),
+                  from_standby=summary.get('locomotion', {}).get('from_measured_standby_attitude', False))
     ground = model.geom('hb_carpet_collision').id
     feet = [model.body(f'{side}_ankle_roll_link').id for side in ('l','r')]
     jp, jr = np.zeros((3, model.nv)), np.zeros((3, model.nv))

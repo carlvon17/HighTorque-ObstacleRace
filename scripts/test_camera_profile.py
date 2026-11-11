@@ -63,6 +63,9 @@ class CameraProfileTests(unittest.TestCase):
         profile=json.loads((ROOT/'sim/d435i_camera.json').read_text())
         with tempfile.TemporaryDirectory() as directory:
             model,_=visual_world(Path(directory),{'position':[.55,-1.25]},camera_profile=profile)
+            # Isolate the two-box gap. The Pro optics can also see the third
+            # box from the first sample in this sequence.
+            model.body('hb_obstacle_01').pos[1] = 4.
             rig=SensorRig(model,noise=False,camera_profile=profile)
             try:
                 for separation in (.50,.57,.44):
@@ -134,7 +137,7 @@ class CameraProfileTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             _,xml=visual_world(Path(directory),{'position':[.55,-1.25]},True,camera_profile=profile)
             import xml.etree.ElementTree as ET
-            camera=ET.fromstring(xml).find("worldbody/body/camera[@name='nav_camera']")
+            camera=ET.fromstring(xml).find(".//camera[@name='nav_camera']")
             camera.attrib.pop('pos');camera.attrib.pop('xyaxes')
             scene=ET.Element('mujoco');visual=ET.SubElement(scene,'visual')
             ET.SubElement(visual,'global',offwidth='640',offheight='480')

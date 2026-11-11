@@ -89,7 +89,7 @@ def execute(output, name, video):
     config = CASES[name]
     schedule = output/(name+'_faults.json')
     schedule.write_text(json.dumps(config['faults'], indent=2))
-    command = [sys.executable, str(ROOT/'scripts/run_visual.py'), '--duration', str(config['duration']),
+    command = [sys.executable, str(ROOT/'scripts/run_visual.py'), '--navigation-profile', 'shared', '--bend-profile', 'smooth', '--duration', str(config['duration']),
                '--sensor-faults', str(schedule), '--output', str(output/name)]
     if 'spawn' in config:
         command.extend(['--spawn', *map(str, config['spawn'])])
