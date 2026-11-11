@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 import cv2
 import numpy as np
 from navigation.surface_odometry import SurfaceOdometry
-from navigation.gap_controller import GapController
+from navigation.avoid_controller import LANE_BAND, SideStepController, blocking
 from navigation.ground import GroundEstimator
 from navigation.floor_odometry import FloorOdometry
 
@@ -29,6 +29,10 @@ class Perception:
     current_white: np.ndarray | None = None
     lane_support: tuple[float, float] | None = None
     lane_observed: bool = True
+    # Raw boundary fits of this frame for the side-step avoider; the lane
+    # strategy above never reads them.
+    boundaries: tuple = ()
+    lane_pair: bool = False
 
 
 class RGBDOdometry:
@@ -190,6 +194,8 @@ class CameraPerception:
         self.rng = np.random.default_rng(4)
         self.box_rng = np.random.default_rng(17)
         self.previous_lane = None
+        self.boundaries = []
+        self.lane_pair = False
         self.last_pose = None
         self.ground = GroundEstimator()
         self.map_translation = np.zeros(2)
@@ -330,6 +336,8 @@ class CameraPerception:
 
     def fit_lane(self, points, reference=None):
         self.lane_support=None
+        self.boundaries=[]
+        self.lane_pair=False
         points = points[(points[:,0]>-.12)&(points[:,0]<1.4)&(abs(points[:,1])<1.4)]
         if len(points)<20:
             return None
@@ -352,6 +360,8 @@ class CameraPerception:
             # A curved boundary can produce two RANSAC segments. They only
             # form a lane pair if both are observed over the same forward
             # interval and have lane-width separation within that interval.
+            self.boundaries=[(line.copy(),(float(spans[index][0]),float(spans[index][1])))
+                             for index,line in enumerate(lines)]
             lower=max(0.,spans[0][0],spans[1][0])
             upper=min(spans[0][1],spans[1][1])
             if upper-lower>=.18:
@@ -360,8 +370,11 @@ class CameraPerception:
                 separation=abs(np.polyval(lines[0],samples)-np.polyval(lines[1],samples))/np.sqrt(1+slope*slope)
                 if np.all((separation>.36)&(separation<.8)):
                     self.lane_support=(float(lower),float(upper))
+                    self.lane_pair=True
                     return np.mean(lines,axis=0)
         if lines:
+            if len(lines)<2:
+                self.boundaries=[(lines[0].copy(),(float(spans[0][0]),float(spans[0][1])))]
             # One boundary can be hidden by a box. Offset the visible boundary
             # by the known lane half-width, along its normal, not along image Y.
             line=lines[0];x=np.linspace(spans[0][0],spans[0][1],40)
@@ -601,7 +614,7 @@ class CameraPerception:
                 if matching.sum()>=12 and np.ptp(current_x[matching])>.18:
                     lane_observed=True
                     break
-        return Perception(frame.time,lane,local,obstacles,np.asarray(finish).reshape(-1,2),-ground,overlay,current_white,self.lane_support,lane_observed)
+        return Perception(frame.time,lane,local,obstacles,np.asarray(finish).reshape(-1,2),-ground,overlay,current_white,self.lane_support,lane_observed,tuple(self.boundaries),self.lane_pair)
 
 
 class VisualNavigator:
@@ -615,13 +628,12 @@ class VisualNavigator:
         self.path=np.empty((0,2));self.mode='initializing';self.finished=False
         self.finish_target=None;self.finish_normal=None;self.last_good=-1.;self.blocked_since=None
         self.effective_lane=None
-        self.plan_stamp=None;self.cached_path=None;self.observed_pose=np.zeros(3)
+        self.observed_pose=np.zeros(3)
         self.straight_headings=[];self.corridor_heading=None;self.corridor_point=None
-        self.shift_reference=None
         self.measured_velocity=np.zeros(2)
         self.velocity_pose=None
         self.velocity_time=None
-        self.gap=GapController()
+        self.avoid=SideStepController()
 
     def observe(self, perception, pose, turn):
         if self.velocity_time is not None and perception.time>self.velocity_time:
@@ -702,47 +714,6 @@ class VisualNavigator:
                 # motion relative to the last observed stripe can finish.
                 self.finish_target=target
 
-    def plan(self,p):
-        step=.005
-        edges=sorted(v for ox,oy,sx,sy in p.obstacles for v in (ox-sx/2-.135,ox+sx/2+.135))
-        extra=[v for a,b in zip(edges,edges[1:]) for v in (a+1e-6,(a+b)/2,b-1e-6) if 0<v<1.6]
-        x=np.unique(np.r_[np.arange(0,1.601,step),extra])
-        center=np.polyval(p.lane,x)
-        offsets=np.linspace(-.27,.27,109)
-        y=center[:,None]+offsets[None,:]
-        valid=np.ones(y.shape,bool)
-        for ox,oy,sx,sy in p.obstacles:
-            valid &= (abs(x[:,None]-ox)>=sx/2+.135)|(abs(y-oy)>=sy/2+.280)
-        delta=offsets[:,None]-offsets[None,:]
-        costs=np.zeros(len(offsets))
-        parents=np.zeros(valid.shape,int)
-        costs=2*offsets**2
-        # Backward DP: the entire visible corridor informs the first maneuver.
-        for i in range(len(x)-1,-1,-1):
-            dx=x[i+1]-x[i] if i<len(x)-1 else step
-            transition=8*(delta/dx)**2
-            candidate=transition+costs[None,:]
-            if i<len(x)-1:
-                ya=center[i]+offsets[:,None]
-                yb=center[i+1]+offsets[None,:]
-                for ox,oy,sx,sy in p.obstacles:
-                    enter=max(0.,(ox-sx/2-.135-x[i])/dx)
-                    leave=min(1.,(ox+sx/2+.135-x[i])/dx)
-                    if enter<leave:
-                        a=ya+(yb-ya)*enter;b=ya+(yb-ya)*leave
-                        blocked=(np.minimum(a,b)<oy+sy/2+.280)&(np.maximum(a,b)>oy-sy/2-.280)
-                        candidate[blocked]=np.inf
-            j=np.argmin(candidate,axis=1)
-            costs=candidate[np.arange(len(offsets)),j]+2*offsets**2
-            costs[~valid[i]]=np.inf
-            parents[i]=j
-        j=int(np.argmin(costs+100*(center[0]+offsets)**2))
-        if not np.isfinite(costs[j]):return None
-        choice=[]
-        for i in range(len(x)):
-            choice.append(j);j=parents[i,j]
-        return np.column_stack([x,center+offsets[choice]])
-
     def update(self,time,pose,dt=.02):
         p=self.perception
         if p is not None and p.lane is not None and self.corridor_heading is not None:
@@ -756,8 +727,7 @@ class VisualNavigator:
             p=replace(p,lane=np.array([0.,slope,point[1]-slope*point[0]]))
         self.effective_lane=None if p is None or p.lane is None else p.lane.copy()
         desired=np.zeros(3)
-        brake_forward=False
-        gap_command=None
+        direct=False
         if self.finished:self.mode='finished'
         elif p is None or time-p.time>self.observation_lease or p.lane is None:
             self.mode='lost_vision'
@@ -768,17 +738,28 @@ class VisualNavigator:
                 if remaining@self.finish_normal<=0 and abs(remaining@tangent)<.25:
                     self.finished=True;self.mode='finished'
             if not self.finished:
-                near=any(-.25<o[0]<.85 for o in p.obstacles)
-                if self.plan_stamp!=p.time:
-                    self.cached_path=self.plan(p) if near else np.column_stack([np.arange(0,1,.02),np.polyval(p.lane,np.arange(0,1,.02))])
-                    self.plan_stamp=p.time
-                path=self.cached_path
-                if path is None:self.mode='blocked'
+                # Lane following and box avoidance are fully separate modes:
+                # a blocking box hands control to the side-step avoider, which
+                # returns it only after several clear two-line frames.
+                outcome=None
+                if self.avoid.phase=='idle':
+                    box=blocking(p.obstacles,p.lane,LANE_BAND)
+                    if box is not None:
+                        self.avoid.begin(time,self.observed_pose,self.corridor_heading,box)
+                if self.avoid.phase!='idle':
+                    outcome=self.avoid.update(time,p,self.observed_pose,pose,
+                                              self.measured_velocity,self.corridor_heading)
+                if self.avoid.phase=='failed':self.mode='blocked'
+                elif outcome is not None:
+                    desired,direct=outcome
+                    self.path=self.avoid.path
+                    self.mode='cross' if self.avoid.phase in ('cross','settle') else 'cruise'
                 else:
-                    self.path=path;self.mode='avoid' if near else 'lane'
-                    target_index=np.argmin(abs(path[:,0]-(.03 if near else .18)))
-                    target=(path[target_index]@rotation2(self.observed_pose[2]).T+self.observed_pose[:2]-pose[:2])@rotation2(pose[2])
-                    heading_x=.1 if near else .18
+                    self.path=np.column_stack([np.arange(0,1,.02),np.polyval(p.lane,np.arange(0,1,.02))])
+                    self.mode='lane'
+                    target_index=np.argmin(abs(self.path[:,0]-.18))
+                    target=(self.path[target_index]@rotation2(self.observed_pose[2]).T+self.observed_pose[:2]-pose[:2])@rotation2(pose[2])
+                    heading_x=.18
                     if p.lane_support is not None:heading_x=max(heading_x,p.lane_support[0])
                     support=p.current_white if p.current_white is not None and len(p.current_white) else p.white
                     observed_x=support[:,0]
@@ -788,52 +769,9 @@ class VisualNavigator:
                     # into the camera's near blind region. Use observed support.
                     heading=np.arctan(np.polyval(np.polyder(p.lane),heading_x))+(self.observed_pose[2]-pose[2]+np.pi)%(2*np.pi)-np.pi
                     desired=np.array([self.speed,np.clip(1.8*target[1],-.22,.22),np.clip(2.5*heading,-.8,.8)])
-                    if near:
-                        velocity=self.measured_velocity@rotation2(pose[2])
-                        lateral_error=target[1]-.20*velocity[1]
-                        lateral=np.clip(3*lateral_error,-.20,.20)
-                        if abs(lateral_error)>.008:lateral=np.sign(lateral)*max(.10,abs(lateral))
-                        else:lateral=0.
-                        desired[:2]=[.20,lateral]
-                        # Small tracking corrections can accompany forward
-                        # walking. Reserve longitudinal holding for an actual
-                        # change of bypass side, with hysteresis until aligned.
-                        shifting=abs(target[1])>.06 or (self.shift_reference is not None and abs(target[1])>.015)
-                        if shifting:
-                            if self.shift_reference is None:
-                                behind=[o for o in p.obstacles if o[0]<0]
-                                ahead=[o for o in p.obstacles if o[0]>0]
-                                advance=0.
-                                if behind and ahead:
-                                    back=max(behind,key=lambda o:o[0]);front=min(ahead,key=lambda o:o[0])
-                                    lower=back[0]+back[2]/2+.135
-                                    upper=front[0]-front[2]/2-.135
-                                    if lower<upper and -.03<lower<.08:
-                                        advance=(lower+upper)/2
-                                self.shift_reference=self.observed_pose[:2]+np.array([advance,0.])@rotation2(self.observed_pose[2]).T
-                            longitudinal=((self.shift_reference-pose[:2])@rotation2(pose[2]))[0]
-                            # This AMP policy creeps forward during pure lateral
-                            # walking. Close the loop on estimated displacement;
-                            # the small feedforward comes from loco calibration.
-                            desired[0]=np.clip(8*longitudinal-.05*abs(desired[1])/.12-.25*velocity[0],-.12,.12)
-                        else:self.shift_reference=None
-                        # Brake before a narrow lateral transition; starting
-                        # braking only at the 3 cm lookahead overshoots a gap.
-                        change=np.flatnonzero(abs(path[:,1]-path[target_index,1])>.04)
-                        if self.shift_reference is None and len(change) and path[change[0],0]<max(.12,.50*max(0.,velocity[0])):
-                            desired[0]=0.;brake_forward=True
-                        gap_command=self.gap.update(time,p,self.observed_pose,pose,self.measured_velocity,self.corridor_heading)
-                        if gap_command is not None:
-                            desired[:2]=gap_command
-                            self.shift_reference=None
-                            brake_forward=self.gap.phase=='brake'
-                            if self.gap.phase=='failed':self.mode='blocked'
-                            if self.gap.phase=='settle':desired[2]=0.
-                    else:self.shift_reference=None
         self.command+=np.clip(desired-self.command,-np.array([.4,.5,1.5])*dt,np.array([.4,.5,1.5])*dt)
-        # The gap servo already includes measured-velocity damping. A second
-        # half-second ramp here delays braking until after the narrow gap.
-        if gap_command is not None:self.command[:2]=gap_command
-        if gap_command is not None and self.gap.phase=='settle':self.command[:]=0.
-        if brake_forward:self.command[0]=0.
+        # The cross servo already includes measured-velocity damping. A second
+        # half-second ramp here delays the stop-and-shift handover.
+        if direct:self.command[:2]=desired[:2]
+        if self.avoid.phase=='settle':self.command[:]=0.
         return self.command.copy()

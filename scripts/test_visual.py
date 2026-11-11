@@ -92,15 +92,6 @@ class VisualTests(unittest.TestCase):
         nav.update(0,np.array([.51,0,0]))
         self.assertTrue(nav.finished)
 
-    def test_grid_preserves_small_positive_gap_without_shrinking_boxes(self):
-        nav=VisualNavigator()
-        def observation(second):
-            return Perception(0,np.zeros(3),np.empty((0,2)),
-                np.array([[.25,.15,.2,.2],[second,-.15,.2,.2]]),
-                np.empty((0,2)),.36,np.zeros((1,1,3)))
-        self.assertIsNotNone(nav.plan(observation(.722)))
-        self.assertIsNone(nav.plan(observation(.718)))
-
     def test_observed_straight_corridor_rejects_occlusion_heading_jump(self):
         nav=VisualNavigator()
         def observation(t,lane,boxes):
@@ -110,9 +101,13 @@ class VisualTests(unittest.TestCase):
             p=observation(i*.06,[0,0,0],[[.6,.15,.2,.2]])
             nav.observe(p,np.zeros(3),0)
         nav.observe(observation(.3,[.2,-.15,0],[[.6,.15,.2,.2]]),np.zeros(3),0)
+        # The blocking box hands control to side-step avoidance, which holds
+        # the observed corridor heading instead of steering on the jumped fit.
         self.assertAlmostEqual(nav.update(.3,np.zeros(3))[2],0)
+        self.assertEqual(nav.mode,'cross')
         nav.observe(observation(.36,[.2,.15,0],[]),np.zeros(3),0)
-        self.assertGreater(nav.update(.36,np.zeros(3))[2],0)
+        self.assertAlmostEqual(nav.update(.36,np.zeros(3))[2],0)
+        self.assertEqual(nav.mode,'cross')
 
     def test_observation_lease_tracks_the_onboard_frame_period(self):
         # The Jetson produces a frame every 0.4--0.7 s. With the simulator's fixed

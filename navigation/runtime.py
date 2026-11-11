@@ -214,7 +214,7 @@ class NavigationRuntime:
                 ground_plane=self.odometry.geometry.ground.result)
             if self.observation.lane is not None and self.observation.lane_observed:
                 self.last_lane_observation_time = float(frame.time)
-            self.navigator.gap.translate_map(getattr(self.perception,'map_translation',np.zeros(2)))
+            self.navigator.avoid.translate_map(getattr(self.perception,'map_translation',np.zeros(2)))
         else:
             # Neither erase hidden boxes nor fuse pixels at an unknown pose.
             # Retain the accepted reference, inhibit motion, and recover first.
@@ -258,8 +258,8 @@ class NavigationRuntime:
         else:
             self.reason = 'ready'
         recovery=self.motion_recovery.update(timestamp,self.desired,self.pose,
-            self.navigator.measured_velocity,self.reason=='ready' and self.navigator.gap.phase=='idle')
-        if self.reason=='ready' and self.navigator.gap.phase=='idle':
+            self.navigator.measured_velocity,self.reason=='ready' and self.navigator.avoid.phase in ('idle','cruise'))
+        if self.reason=='ready' and self.navigator.avoid.phase in ('idle','cruise'):
             if recovery=='settle':self.reason='standing_recovery'
             elif recovery=='failed':
                 self.reason='motion_stalled';self.navigator.mode='blocked'
@@ -282,11 +282,11 @@ class NavigationRuntime:
                     rgb_usable=self.rgb_usable,
                     floor_tracking_reason=self.odometry.floor.reason,
                     floor_tracking_quality=dict(self.odometry.floor.quality),
-                    gap_phase=self.navigator.gap.phase,gap_error=self.navigator.gap.error.tolist(),
-                    gap_recoveries=self.navigator.gap.recoveries,
+                    avoid_phase=self.navigator.avoid.phase,avoid_error=self.navigator.avoid.error.tolist(),
+                    avoid_recoveries=self.navigator.avoid.recoveries,
                     motion_recovery=self.motion_recovery.phase,
                     motion_recoveries=self.motion_recovery.recoveries,
-                    gap_target=None if self.navigator.gap.target is None else self.navigator.gap.target.tolist(),
+                    avoid_target=None if self.navigator.avoid.target is None else self.navigator.avoid.target.tolist(),
                     measured_velocity=self.navigator.measured_velocity.tolist(),
                     effective_lane=None if getattr(self.navigator,'effective_lane',None) is None else self.navigator.effective_lane.tolist(),
                     corridor_heading=self.navigator.corridor_heading,

@@ -26,7 +26,7 @@ def build(release_id, output, fixture=None):
             'sim/d435i_camera.json','reference/robot/PiPlusPro_SF_12L8A0G2H0W_Z_261010/urdf/PiPlusPro_SF_12L8A0G2H0W_Z_261010.urdf',
             *['scripts/test_'+name+'.py' for name in ('depth_ground','ground_color_integration','surface_odometry','rgbd_odometry','floor_odometry','floor_projection',
                                                       'floor_map','sensor_recovery','single_boundary',
-                                                      'map_relocalization','gap_controller','visual_finish','corridor_feedback','motion_recovery')]]
+                                                      'map_relocalization','avoid_controller','visual_finish','corridor_feedback','motion_recovery')]]
     if fixture:
         import numpy as np
         with np.load(fixture,allow_pickle=False) as sensors:
